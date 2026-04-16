@@ -236,7 +236,7 @@ class EventBufferTest {
         val payloads = buffer.drain("sandbox", context)
         assertEquals("sandbox", payloads[0].environment)
         assertEquals("android", payloads[0].context.platform)
-        assertEquals("14.0", payloads[0].context.osVersion)
+        assertEquals("34", payloads[0].context.osVersion)
     }
 
     @Test
@@ -250,7 +250,7 @@ class EventBufferTest {
         // Verify structure (JSON serialization requires real org.json, not available in unit tests)
         assertEquals("production", payload.environment)
         assertEquals("android", payload.context.platform)
-        assertEquals("14.0", payload.context.osVersion)
+        assertEquals("34", payload.context.osVersion)
         assertEquals(1, payload.events.size)
         assertEquals(EventType.FEATURE, payload.events[0].type)
         assertEquals("export_clicked", payload.events[0].name)

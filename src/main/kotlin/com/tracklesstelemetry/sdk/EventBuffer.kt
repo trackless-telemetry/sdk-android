@@ -89,6 +89,7 @@ internal class EventBuffer(
         val existing = aggregated[key]
         if (existing != null) {
             synchronized(existing) {
+                existing.count = (existing.count ?: 1) + 1
                 val newDurations = event.durations ?: if (event.duration != null) mutableListOf(event.duration) else null
                 if (newDurations != null) {
                     if (existing.durations == null) {
@@ -103,6 +104,7 @@ internal class EventBuffer(
         if (totalSize >= maxItems) return false
 
         val copy = event.copy(
+            count = 1,
             durations = if (event.duration != null && event.durations == null) {
                 mutableListOf(event.duration)
             } else {
@@ -113,6 +115,7 @@ internal class EventBuffer(
         val previous = aggregated.putIfAbsent(key, copy)
         if (previous != null) {
             synchronized(previous) {
+                previous.count = (previous.count ?: 1) + 1
                 val newDurations = copy.durations
                 if (newDurations != null) {
                     if (previous.durations == null) {

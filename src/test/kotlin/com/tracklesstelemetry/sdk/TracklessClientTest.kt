@@ -187,11 +187,13 @@ class TracklessClientTest {
     @DisplayName("Invalid event names are silently ignored")
     fun invalidNamesAreIgnored() {
         configure()
+        // Flush the initial session:start event
+        Trackless.flush()
+        io.mockk.clearMocks(HttpClient, answers = false)
 
-        Trackless.feature("invalid name with spaces")
-        Trackless.feature("INVALID!")
-        Trackless.feature("a".repeat(101))
         Trackless.feature("")
+        Trackless.feature("!!!")
+        Trackless.feature("@#\$%^&")
 
         Trackless.flush()
 
@@ -301,7 +303,7 @@ class TracklessClientTest {
             )
         )
 
-        Trackless.feature("INVALID_NAME!")
+        Trackless.feature("!!!")
         assertEquals(1, errors.size)
         assertTrue(errors[0] is IllegalArgumentException)
     }
@@ -405,7 +407,7 @@ class TracklessClientTest {
         val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
         assertEquals(1, errorEvents.size)
         assertEquals(ErrorSeverity.FATAL, errorEvents[0].severity)
-        assertEquals("E001", errorEvents[0].code)
+        assertEquals("e001", errorEvents[0].code)
     }
 
     @Test

@@ -37,6 +37,7 @@ dependencies {
     // ZERO runtime dependencies — Android framework only
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("io.mockk:mockk:1.13.9")
+    testImplementation("org.json:json:20231013")
 }
 
 mavenPublishing {
