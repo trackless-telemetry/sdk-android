@@ -48,6 +48,7 @@ internal data class EventContext(
     val buildNumber: String? = null,
     val daysSinceInstall: Int? = null,
     val sdkVersion: String? = null,
+    val distributionChannel: String? = null,
 ) {
     fun toJson(): JSONObject {
         val json = JSONObject()
@@ -60,6 +61,7 @@ internal data class EventContext(
         if (buildNumber != null) json.put("buildNumber", buildNumber)
         if (daysSinceInstall != null) json.put("daysSinceInstall", daysSinceInstall)
         if (sdkVersion != null) json.put("sdkVersion", sdkVersion)
+        if (distributionChannel != null) json.put("distributionChannel", distributionChannel)
         return json
     }
 }

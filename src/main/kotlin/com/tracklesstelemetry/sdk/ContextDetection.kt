@@ -20,7 +20,7 @@ import java.util.Locale
  */
 internal object ContextDetection {
 
-    private const val SDK_VERSION = "android/0.2.2"
+    private const val SDK_VERSION = "android/0.2.3"
 
     /**
      * Detect the full event context.
@@ -36,6 +36,7 @@ internal object ContextDetection {
             buildNumber = detectBuildNumber(context),
             daysSinceInstall = detectDaysSinceInstall(context),
             sdkVersion = SDK_VERSION,
+            distributionChannel = detectDistributionChannel(context),
         )
     }
 
@@ -160,6 +161,33 @@ internal object ContextDetection {
             diffDays.coerceAtLeast(0)
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    /**
+     * Detect the app distribution source.
+     *
+     * Returns one of: "debug", "play_store", "galaxy_store", "amazon_store", "sideloaded".
+     */
+    private fun detectDistributionChannel(context: Context): String {
+        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (isDebuggable) return "debug"
+
+        return try {
+            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getInstallerPackageName(context.packageName)
+            }
+            when (installer) {
+                "com.android.vending" -> "play_store"
+                "com.sec.android.app.samsungapps" -> "galaxy_store"
+                "com.amazon.venezia" -> "amazon_store"
+                else -> "sideloaded"
+            }
+        } catch (_: Throwable) {
+            "sideloaded"
         }
     }
 }
