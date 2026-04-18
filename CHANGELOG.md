@@ -5,6 +5,12 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-04-18
+
+### Changed
+
+- **`distributionChannel` reports `"unknown"` instead of `"sideloaded"` when the installer is unidentifiable** — when `PackageManager` returns a `null` installer package name (which happens for `adb install` and some OEM scenarios where the install source isn't recorded) or when the lookup throws, the channel is now `"unknown"` rather than `"sideloaded"`. `"sideloaded"` is reserved for cases where we have positive evidence of a non-store installer (a non-null installer that doesn't match a known store).
+
 ## [0.2.3] - 2026-04-16
 
 ### Added

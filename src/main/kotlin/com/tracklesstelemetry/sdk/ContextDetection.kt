@@ -20,7 +20,7 @@ import java.util.Locale
  */
 internal object ContextDetection {
 
-    private const val SDK_VERSION = "android/0.2.3"
+    private const val SDK_VERSION = "android/0.2.4"
 
     /**
      * Detect the full event context.
@@ -167,7 +167,14 @@ internal object ContextDetection {
     /**
      * Detect the app distribution source.
      *
-     * Returns one of: "debug", "play_store", "galaxy_store", "amazon_store", "sideloaded".
+     * Returns one of: "debug", "play_store", "galaxy_store", "amazon_store",
+     * "sideloaded", or "unknown".
+     *
+     * "unknown" is returned when the installer package name is null (which occurs
+     * for `adb install` and some OEM scenarios where the install source is not
+     * recorded) or when the lookup throws. A non-null installer that doesn't match
+     * a known store returns "sideloaded" — i.e., we have positive evidence of a
+     * non-store installer.
      */
     private fun detectDistributionChannel(context: Context): String {
         val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -181,13 +188,14 @@ internal object ContextDetection {
                 context.packageManager.getInstallerPackageName(context.packageName)
             }
             when (installer) {
+                null -> "unknown"
                 "com.android.vending" -> "play_store"
                 "com.sec.android.app.samsungapps" -> "galaxy_store"
                 "com.amazon.venezia" -> "amazon_store"
                 else -> "sideloaded"
             }
         } catch (_: Throwable) {
-            "sideloaded"
+            "unknown"
         }
     }
 }
