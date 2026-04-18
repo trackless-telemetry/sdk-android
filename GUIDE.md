@@ -10,7 +10,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.2.3")
+    implementation("com.tracklesstelemetry:sdk-android:0.2.4")
 }
 ```
 
@@ -18,7 +18,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.2.3'
+    implementation 'com.tracklesstelemetry:sdk-android:0.2.4'
 }
 ```
 
@@ -554,7 +554,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.2.3"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, or `"debug"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.2.4"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
 
 ### Google Play Data Safety
 
