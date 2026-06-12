@@ -1,13 +1,19 @@
 package com.tracklesstelemetry.sdk
 
+import kotlin.math.roundToInt
+
 /**
  * In-memory session manager.
  *
  * Tracks session duration and depth (screen/activity count).
  *
  * Thread-safe: all methods are synchronized.
+ *
+ * @param clock Millisecond clock — injectable for testing.
  */
-internal class SessionManager {
+internal class SessionManager(
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
 
     data class SessionResult(
         val duration: Int,
@@ -32,7 +38,7 @@ internal class SessionManager {
     fun start(): Boolean {
         if (active) return false
         active = true
-        startTimeMs = System.currentTimeMillis()
+        startTimeMs = clock()
         depth = 0
         return true
     }
@@ -46,9 +52,9 @@ internal class SessionManager {
     fun end(): SessionResult? {
         if (!active) return null
         active = false
-        val durationMs = System.currentTimeMillis() - startTimeMs
+        val durationMs = clock() - startTimeMs
         val result = SessionResult(
-            duration = (durationMs / 1000).toInt(),
+            duration = (durationMs / 1000.0).roundToInt(),
             depth = depth,
         )
         depth = 0

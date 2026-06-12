@@ -525,6 +525,45 @@ class TracklessClientTest {
         Trackless.flush()
     }
 
+    // ─── Session Depth ──────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("Rejected events do not increment session depth")
+    fun rejectedEventsDoNotIncrementSessionDepth() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("valid_feature")
+        Trackless.feature("!!!") // rejected — invalid name
+        Trackless.view("@#\$%^&") // rejected — invalid name
+        Trackless.performance("api_call", -1.0) // rejected — negative duration
+        Trackless.destroy() // ends the session and flushes
+
+        val endEvent = payloads.flatMap { it.events }
+            .find { it.type == EventType.SESSION && it.name == "end" }
+        assertEquals(1, endEvent?.stepIndex)
+    }
+
+    @Test
+    @DisplayName("Accepted events increment session depth")
+    fun acceptedEventsIncrementSessionDepth() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("valid_feature")
+        Trackless.view("home")
+        Trackless.performance("api_call", 1.0)
+        Trackless.error("crash")
+        Trackless.funnel("checkout", 0, "cart")
+        Trackless.destroy() // ends the session and flushes
+
+        val endEvent = payloads.flatMap { it.events }
+            .find { it.type == EventType.SESSION && it.name == "end" }
+        assertEquals(5, endEvent?.stepIndex)
+    }
+
     // ─── Multiple Events ────────────────────────────────────────────────────
 
     @Test

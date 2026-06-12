@@ -74,6 +74,32 @@ class SessionManagerTest {
     }
 
     @Test
+    @DisplayName("Duration rounds to the nearest second (rounds up)")
+    fun durationRoundsUp() {
+        var now = 1_000L
+        val timedSession = SessionManager { now }
+
+        timedSession.start()
+        now = 2_600L // 1.6s elapsed
+
+        val result = timedSession.end()
+        assertEquals(2, result?.duration)
+    }
+
+    @Test
+    @DisplayName("Duration rounds to the nearest second (rounds down)")
+    fun durationRoundsDown() {
+        var now = 1_000L
+        val timedSession = SessionManager { now }
+
+        timedSession.start()
+        now = 2_400L // 1.4s elapsed
+
+        val result = timedSession.end()
+        assertEquals(1, result?.duration)
+    }
+
+    @Test
     @DisplayName("Destroy resets session state")
     fun destroyResetsState() {
         session.start()
