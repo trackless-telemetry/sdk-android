@@ -7,6 +7,15 @@ import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Result of splitting a payload by serialized size: size-compliant payloads
+ * plus any single events too large to send at all.
+ */
+internal data class PayloadSplitResult(
+    val payloads: List<EventPayload>,
+    val dropped: List<TracklessEvent>,
+)
+
+/**
  * In-memory event aggregation buffer.
  *
  * Aggregates events by rollup key (type + name + type-specific fields).
@@ -24,6 +33,38 @@ internal class EventBuffer(
     companion object {
         const val DEFAULT_MAX_ITEMS = 1000
         const val MAX_EVENTS_PER_PAYLOAD = 100
+
+        /**
+         * Max serialized request body size accepted by the ingest endpoint: 50 KB.
+         * Mirrors MAX_REQUEST_BODY_SIZE_BYTES in @trackless/shared-config.
+         */
+        const val MAX_PAYLOAD_BYTES = 50 * 1024
+
+        /**
+         * Split a payload into payloads whose serialized size fits the ingest
+         * request body limit. Oversized payloads have their events halved
+         * recursively; a single-event payload that still exceeds the limit is
+         * dropped. The wire format is unchanged — only the batching boundaries
+         * move.
+         */
+        fun splitBySize(payload: EventPayload, limit: Int = MAX_PAYLOAD_BYTES): PayloadSplitResult {
+            val size = try {
+                payload.toJsonString().toByteArray(Charsets.UTF_8).size
+            } catch (_: Throwable) {
+                // Serialization failures surface through the HTTP layer; pass through unchanged.
+                return PayloadSplitResult(listOf(payload), emptyList())
+            }
+            if (size <= limit) return PayloadSplitResult(listOf(payload), emptyList())
+            if (payload.events.size <= 1) return PayloadSplitResult(emptyList(), payload.events)
+
+            val mid = payload.events.size / 2
+            val first = splitBySize(payload.copy(events = payload.events.take(mid)), limit)
+            val second = splitBySize(payload.copy(events = payload.events.drop(mid)), limit)
+            return PayloadSplitResult(
+                payloads = first.payloads + second.payloads,
+                dropped = first.dropped + second.dropped,
+            )
+        }
     }
 
     private val aggregated = ConcurrentHashMap<String, TracklessEvent>()
@@ -86,10 +127,11 @@ internal class EventBuffer(
         val key = event.rollupKey()
         if (key.isEmpty()) return false
 
+        // No count field on performance events — the durations list length
+        // is the sample count (matches web/iOS).
         val existing = aggregated[key]
         if (existing != null) {
             synchronized(existing) {
-                existing.count = (existing.count ?: 1) + 1
                 val newDurations = event.durations ?: if (event.duration != null) mutableListOf(event.duration) else null
                 if (newDurations != null) {
                     if (existing.durations == null) {
@@ -104,18 +146,16 @@ internal class EventBuffer(
         if (totalSize >= maxItems) return false
 
         val copy = event.copy(
-            count = 1,
-            durations = if (event.duration != null && event.durations == null) {
+            durations = if (event.duration != null) {
                 mutableListOf(event.duration)
             } else {
-                event.durations?.toMutableList()
+                event.durations?.toMutableList() ?: mutableListOf()
             },
             duration = null,
         )
         val previous = aggregated.putIfAbsent(key, copy)
         if (previous != null) {
             synchronized(previous) {
-                previous.count = (previous.count ?: 1) + 1
                 val newDurations = copy.durations
                 if (newDurations != null) {
                     if (previous.durations == null) {

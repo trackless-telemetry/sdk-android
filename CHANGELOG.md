@@ -5,6 +5,17 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-11
+
+### Fixed
+
+- **Session depth no longer counts rejected events** — session activity is now recorded only after an event passes validation, matching the web and iOS SDKs. Previously an invalid (rejected) event still incremented session depth.
+- **Performance events no longer carry a `count` field** — performance aggregation relies on the durations list as the sample count, matching the web and iOS SDKs. Previously Android inflated a meaningless `count` value during aggregation.
+- **Session duration rounds to the nearest second** — matching the web and iOS SDKs. Previously the duration was truncated.
+- **Request body size limit** — flush now checks each serialized payload against the ingest endpoint's 50 KB body limit. Oversized payloads are split in half recursively until each request fits; a single event that exceeds the limit on its own is dropped with a warning. Previously oversized batches were rejected server-side and the whole batch was lost.
+- **Buffer-full visibility** — when the event buffer reaches its 1000-item cap and starts rejecting new events, the SDK now logs a warning (at most once per session, re-armed when a new session starts, respects `suppressWarnings`) instead of dropping data silently.
+- **Pre-configure visibility** — event methods called before `configure()` now log a one-time warning (respects `suppressWarnings`) instead of dropping events silently.
+
 ## [0.2.4] - 2026-04-18
 
 ### Changed

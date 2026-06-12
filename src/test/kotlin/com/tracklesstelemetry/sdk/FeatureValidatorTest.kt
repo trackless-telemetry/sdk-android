@@ -68,7 +68,7 @@ class FeatureValidatorTest {
         // Consecutive dots
         assertFalse(FeatureValidator.isValid("export..clicked"))
 
-        // Multiple dots are allowed for hierarchical grouping
+        // Multiple dots are accepted by the regex
         assertTrue(FeatureValidator.isValid("a.b.c"))
         assertTrue(FeatureValidator.isValid("theme.dark.variant"))
     }

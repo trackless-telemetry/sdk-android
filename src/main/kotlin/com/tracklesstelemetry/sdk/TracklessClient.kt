@@ -45,6 +45,12 @@ object Trackless {
     private val enabled = AtomicBoolean(false)
     private val destroyed = AtomicBoolean(false)
 
+    /** One-shot flag: warn at most once per session when the buffer rejects an event. */
+    private val bufferFullWarned = AtomicBoolean(false)
+
+    /** One-shot flag: warn at most once when events are recorded while unconfigured. */
+    private val preConfigureWarned = AtomicBoolean(false)
+
     private var apiKey: String = ""
     private var endpoint: String = ""
     private var environment: TracklessEnvironment = TracklessEnvironment.PRODUCTION
@@ -69,6 +75,9 @@ object Trackless {
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
     private val activeActivityCount = AtomicInteger(0)
+
+    /** Test-only hook — receives each warning message that passes the suppression check. */
+    internal var onWarning: ((String) -> Unit)? = null
 
     /**
      * Whether the SDK has been configured and is ready to record events.
@@ -101,6 +110,8 @@ object Trackless {
             funnelTracker = FunnelTracker()
             this.context = ContextDetection.detect(context)
 
+            bufferFullWarned.set(false)
+            preConfigureWarned.set(false)
             destroyed.set(false)
             enabled.set(config.enabled)
 
@@ -109,9 +120,7 @@ object Trackless {
             if (enabled.get()) {
                 startPeriodicFlush()
                 registerLifecycleCallbacks()
-                sessionManager.start()
-                buffer.add(TracklessEvent(type = EventType.SESSION, name = "start"))
-                debug("session started")
+                startNewSession()
             }
         } catch (_: Throwable) {
             // Configure never throws
@@ -125,7 +134,7 @@ object Trackless {
      */
     fun view(name: String, detail: String? = null) {
         if (!canRecord()) return
-        addEvent(TracklessEvent(type = EventType.VIEW, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))
+        if (!addEvent(TracklessEvent(type = EventType.VIEW, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))) return
         sessionManager.recordActivity()
         debug("view — $name${if (detail != null) " detail=$detail" else ""}")
     }
@@ -135,7 +144,7 @@ object Trackless {
      */
     fun feature(name: String, detail: String? = null) {
         if (!canRecord()) return
-        addEvent(TracklessEvent(type = EventType.FEATURE, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))
+        if (!addEvent(TracklessEvent(type = EventType.FEATURE, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))) return
         sessionManager.recordActivity()
         debug("feature — $name${if (detail != null) " detail=$detail" else ""}")
     }
@@ -154,7 +163,7 @@ object Trackless {
             return
         }
         sessionManager.recordActivity()
-        buffer.add(
+        addToBuffer(
             TracklessEvent(
                 type = EventType.FUNNEL,
                 name = normalizedFunnel,
@@ -179,7 +188,7 @@ object Trackless {
         if (!canRecord()) return
         if (durationSeconds < 0) return
         if (thresholdSeconds != null && thresholdSeconds <= 0) return
-        addEvent(
+        val added = addEvent(
             TracklessEvent(
                 type = EventType.PERFORMANCE,
                 name = name,
@@ -187,6 +196,7 @@ object Trackless {
                 threshold = thresholdSeconds,
             )
         )
+        if (!added) return
         sessionManager.recordActivity()
         debug("performance — $name duration=${durationSeconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""}")
     }
@@ -196,7 +206,7 @@ object Trackless {
      */
     fun error(name: String, severity: ErrorSeverity = ErrorSeverity.ERROR, code: String? = null) {
         if (!canRecord()) return
-        addEvent(
+        val added = addEvent(
             TracklessEvent(
                 type = EventType.ERROR,
                 name = name,
@@ -204,6 +214,7 @@ object Trackless {
                 code = code.takeIf { !it.isNullOrEmpty() },
             )
         )
+        if (!added) return
         sessionManager.recordActivity()
         debug("error — $name severity=${severity.value}${if (code != null) " code=$code" else ""}")
     }
@@ -273,16 +284,18 @@ object Trackless {
 
     /**
      * Add an event to the buffer with validation.
+     *
+     * @return true if the event passed validation, false if it was rejected
      */
-    private fun addEvent(event: TracklessEvent) {
+    private fun addEvent(event: TracklessEvent): Boolean {
         try {
-            if (!enabled.get() || destroyed.get() || !configured.get()) return
+            if (!enabled.get() || destroyed.get() || !configured.get()) return false
 
             val normalizedName = FeatureValidator.normalize(event.name)
             if (normalizedName == null) {
                 warn("event name rejected: \"${event.name}\"")
                 notifyError(IllegalArgumentException("Invalid event name: ${event.name}"))
-                return
+                return false
             }
 
             val normalizedEvent = event.copy(
@@ -291,14 +304,26 @@ object Trackless {
                 step = event.step?.let { FeatureValidator.normalize(it) },
                 code = event.code?.let { FeatureValidator.normalize(it) },
             )
-            buffer.add(normalizedEvent)
+            addToBuffer(normalizedEvent)
 
             // Auto-flush if buffer exceeds threshold
             if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
                 performFlush()
             }
+            return true
         } catch (_: Throwable) {
             // Never throws
+            return false
+        }
+    }
+
+    /**
+     * Add an event to the buffer, warning at most once per session
+     * when the buffer rejects an event because it is full.
+     */
+    private fun addToBuffer(event: TracklessEvent) {
+        if (!buffer.add(event) && !bufferFullWarned.getAndSet(true)) {
+            warn("event buffer full — new events are dropped until the next flush")
         }
     }
 
@@ -315,7 +340,17 @@ object Trackless {
         val payloads = buffer.drain(environment.value, context)
         if (payloads.isEmpty()) return
 
+        // Enforce the server's request body size limit on each chunk before sending.
+        val sizedPayloads = mutableListOf<EventPayload>()
         for (payload in payloads) {
+            val split = EventBuffer.splitBySize(payload)
+            sizedPayloads.addAll(split.payloads)
+            repeat(split.dropped.size) {
+                warn("event dropped — serialized payload exceeds the request body size limit")
+            }
+        }
+
+        for (payload in sizedPayloads) {
             debug("flush — ${payload.events.size} events")
             try {
                 val result = HttpClient.send(endpoint, apiKey, payload)
@@ -350,6 +385,9 @@ object Trackless {
     }
 
     private fun canRecord(): Boolean {
+        if (!configured.get() && !destroyed.get() && !preConfigureWarned.getAndSet(true)) {
+            warn("event dropped — SDK is not configured (call Trackless.configure() first)")
+        }
         return enabled.get() && !destroyed.get() && configured.get()
     }
 
@@ -376,13 +414,15 @@ object Trackless {
     }
 
     private fun warn(msg: String) {
-        if (!suppressWarnings) Log.w(TAG, msg)
+        if (suppressWarnings) return
+        onWarning?.invoke(msg)
+        Log.w(TAG, msg)
     }
 
     private fun endCurrentSession() {
         val result = sessionManager.end() ?: return
         funnelTracker.clear()
-        buffer.add(
+        addToBuffer(
             TracklessEvent(
                 type = EventType.SESSION,
                 name = "end",
@@ -395,7 +435,9 @@ object Trackless {
 
     private fun startNewSession() {
         if (sessionManager.start()) {
-            buffer.add(TracklessEvent(type = EventType.SESSION, name = "start"))
+            // Re-arm the buffer-full warning for the new session
+            bufferFullWarned.set(false)
+            addToBuffer(TracklessEvent(type = EventType.SESSION, name = "start"))
             debug("session started")
         }
     }
@@ -507,6 +549,18 @@ object Trackless {
     }
 
     /**
+     * Replace the buffer with a smaller one for testing.
+     */
+    internal fun replaceBufferForTesting(maxItems: Int) {
+        buffer = EventBuffer(maxItems)
+    }
+
+    /**
+     * Current buffer size for testing.
+     */
+    internal fun bufferSizeForTesting(): Int = buffer.totalSize
+
+    /**
      * Reset internal state for testing.
      */
     internal fun resetForTesting() {
@@ -516,6 +570,9 @@ object Trackless {
             configured.set(false)
             enabled.set(false)
             destroyed.set(false)
+            bufferFullWarned.set(false)
+            preConfigureWarned.set(false)
+            onWarning = null
             buffer = EventBuffer()
             circuitBreaker = CircuitBreaker()
             sessionManager = SessionManager()

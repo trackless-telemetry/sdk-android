@@ -2,6 +2,7 @@ package com.tracklesstelemetry.sdk
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
@@ -111,7 +112,8 @@ class EventBufferTest {
 
         val payloads = buffer.drain("production", context)
         val event = payloads[0].events[0]
-        assertEquals(3, event.count)
+        // No count field on performance events — the durations list length is the sample count
+        assertNull(event.count)
         assertEquals(3, event.durations?.size)
         assertTrue(event.durations?.containsAll(listOf(100.0, 200.0, 300.0)) == true)
     }
