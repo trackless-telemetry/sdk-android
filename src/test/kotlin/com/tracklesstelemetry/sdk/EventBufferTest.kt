@@ -271,4 +271,50 @@ class EventBufferTest {
         val totalEvents = payloads.sumOf { it.events.size }
         assertEquals(150, totalEvents)
     }
+
+    // ─── firstUses rollup ───────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("addAggregatable sums firstUses across the rollup")
+    fun addAggregatableSumsFirstUses() {
+        // Two session first-uses (firstUses = 1) plus one repeat (no first-use)
+        // roll up to the same key: count = 3, firstUses = 2.
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode", firstUses = 1))
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode"))
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode", firstUses = 1))
+
+        assertEquals(1, buffer.totalSize)
+
+        val event = buffer.drain("production", context)[0].events[0]
+        assertEquals(3, event.count)
+        assertEquals(2, event.firstUses)
+    }
+
+    @Test
+    @DisplayName("A rollup with no first-use omits firstUses on the wire")
+    fun repeatOnlyRollupOmitsFirstUsesOnWire() {
+        // A different-detail / repeat-only entry: the name was already seen, so
+        // firstUses is never set. It must be absent on the wire — the backend
+        // rejects firstUses:0.
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode", detail = "on"))
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode", detail = "on"))
+
+        val event = buffer.drain("production", context)[0].events[0]
+        assertEquals(2, event.count)
+        assertNull(event.firstUses)
+
+        val json = event.toJson()
+        assertFalse(json.has("firstUses"))
+        assertEquals(2, json.getInt("count"))
+    }
+
+    @Test
+    @DisplayName("A first-use rollup emits firstUses on the wire")
+    fun firstUseRollupEmitsFirstUsesOnWire() {
+        buffer.add(TracklessEvent(type = EventType.FEATURE, name = "dark_mode", firstUses = 1))
+
+        val json = buffer.drain("production", context)[0].events[0].toJson()
+        assertTrue(json.has("firstUses"))
+        assertEquals(1, json.getInt("firstUses"))
+    }
 }

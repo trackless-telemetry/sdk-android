@@ -71,6 +71,11 @@ internal data class EventContext(
  *
  * Type-specific fields:
  * - `count`: defaults to 1 if omitted. SDKs set count > 1 for client-side rollup.
+ * - `firstUses`: feature events only. The number of sessions that used this
+ *   feature for the first time within the rolled-up window (>= 1). Feeds
+ *   server-side session-reach analytics. Absent (null) when this rollup carries
+ *   no first-use — the wire format omits it, and the backend rejects `firstUses`
+ *   on non-feature events or values outside `[1, count]`.
  * - `detail`: optional detail for view and feature events.
  * - `step` / `stepIndex`: funnel events only.
  * - `duration`: single performance measurement. Mutually exclusive with `durations`.
@@ -81,6 +86,7 @@ internal data class TracklessEvent(
     val type: EventType,
     val name: String,
     var count: Int? = null,
+    var firstUses: Int? = null,
     val detail: String? = null,
     val step: String? = null,
     val stepIndex: Int? = null,
@@ -95,6 +101,9 @@ internal data class TracklessEvent(
         json.put("type", type.value)
         json.put("name", name)
         if (count != null) json.put("count", count)
+        // Only emit firstUses when it carries a real first-use (>= 1). A rollup
+        // with no first-use leaves it null/0; the backend rejects firstUses:0.
+        firstUses?.let { if (it >= 1) json.put("firstUses", it) }
         if (detail != null) json.put("detail", detail)
         if (step != null) json.put("step", step)
         if (stepIndex != null) json.put("stepIndex", stepIndex)

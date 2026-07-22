@@ -68,6 +68,7 @@ object Trackless {
     private var circuitBreaker: CircuitBreaker = CircuitBreaker()
     private var sessionManager: SessionManager = SessionManager()
     private var funnelTracker: FunnelTracker = FunnelTracker()
+    private var featureTracker: FeatureTracker = FeatureTracker()
 
     private var appContext: Context? = null
     private var scheduler: ScheduledExecutorService? = null
@@ -108,6 +109,7 @@ object Trackless {
             circuitBreaker = CircuitBreaker()
             sessionManager = SessionManager()
             funnelTracker = FunnelTracker()
+            featureTracker = FeatureTracker()
             this.context = ContextDetection.detect(context)
 
             bufferFullWarned.set(false)
@@ -141,12 +143,32 @@ object Trackless {
 
     /**
      * Record a feature usage event.
+     *
+     * The name is normalized in-method (mirroring [funnel]) so the first-use
+     * dedup keys on the normalized name: the first use of each feature name in
+     * a session is marked with `firstUses = 1` (feeding server-side session
+     * reach), and later uses of the same name — including different `detail`
+     * variants — omit the field. The dedup set survives buffer flushes and
+     * resets at session end.
      */
     fun feature(name: String, detail: String? = null) {
         if (!canRecord()) return
-        if (!addEvent(TracklessEvent(type = EventType.FEATURE, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))) return
+        val normalizedName = normalizeName(name) ?: return
+        val normalizedDetail = detail?.takeIf { it.isNotEmpty() }?.let { FeatureValidator.normalize(it) }
+        val isFirstUse = featureTracker.firstUse(normalizedName)
+        addToBuffer(
+            TracklessEvent(
+                type = EventType.FEATURE,
+                name = normalizedName,
+                detail = normalizedDetail,
+                firstUses = if (isFirstUse) 1 else null,
+            )
+        )
+        if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
+            performFlush()
+        }
         sessionManager.recordActivity()
-        debug("feature — $name${if (detail != null) " detail=$detail" else ""}")
+        debug("feature — $normalizedName${if (normalizedDetail != null) " detail=$normalizedDetail" else ""}")
     }
 
     /**
@@ -234,6 +256,7 @@ object Trackless {
                 buffer.clear()
                 sessionManager.destroy()
                 funnelTracker.clear()
+                featureTracker.clear()
                 stopPeriodicFlush()
                 unregisterLifecycleCallbacks()
             } else if (!destroyed.get() && configured.get()) {
@@ -272,6 +295,7 @@ object Trackless {
             stopPeriodicFlush()
             unregisterLifecycleCallbacks()
             funnelTracker.clear()
+            featureTracker.clear()
             configured.set(false)
             enabled.set(false)
             appContext = null
@@ -422,6 +446,7 @@ object Trackless {
     private fun endCurrentSession() {
         val result = sessionManager.end() ?: return
         funnelTracker.clear()
+        featureTracker.clear()
         addToBuffer(
             TracklessEvent(
                 type = EventType.SESSION,
@@ -577,6 +602,7 @@ object Trackless {
             circuitBreaker = CircuitBreaker()
             sessionManager = SessionManager()
             funnelTracker = FunnelTracker()
+            featureTracker = FeatureTracker()
             context = EventContext()
             apiKey = ""
             endpoint = ""

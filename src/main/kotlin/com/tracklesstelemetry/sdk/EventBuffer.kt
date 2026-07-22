@@ -107,6 +107,7 @@ internal class EventBuffer(
         if (existing != null) {
             synchronized(existing) {
                 existing.count = (existing.count ?: 1) + (event.count ?: 1)
+                existing.firstUses = sumFirstUses(existing.firstUses, event.firstUses)
             }
             return true
         }
@@ -118,9 +119,20 @@ internal class EventBuffer(
         if (previous != null) {
             synchronized(previous) {
                 previous.count = (previous.count ?: 1) + (event.count ?: 1)
+                previous.firstUses = sumFirstUses(previous.firstUses, event.firstUses)
             }
         }
         return true
+    }
+
+    /**
+     * Sum two nullable first-use counters, treating null as 0. Returns null when
+     * the total is 0 so a rollup carrying no first-use stays absent on the wire
+     * (the backend rejects `firstUses:0`).
+     */
+    private fun sumFirstUses(a: Int?, b: Int?): Int? {
+        val sum = (a ?: 0) + (b ?: 0)
+        return if (sum > 0) sum else null
     }
 
     private fun addPerformance(event: TracklessEvent): Boolean {

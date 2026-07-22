@@ -5,7 +5,15 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-06-11
+## [0.3.0] - 2026-07-21
+
+### Added
+
+- **Feature reach (session first-use tracking)** — the first use of each feature name within a session is now flagged so the dashboard can report **session reach** (the share of sessions that used a feature at least once). Tracking is fully automatic — existing `feature()` calls benefit with no code changes. Names are normalized before the first-use check, so `feature("Dark Mode")` and `feature("dark_mode")` are recognized as the same feature; repeated uses within a session — including different `detail` variants — are not re-flagged. The first-use set is in-memory only, survives buffer flushes, and resets when the session ends (consistent with the no-cross-session-linking guarantee). Only an aggregate count is transmitted; no identifiers are involved.
+
+### Changed
+
+- **Feature names are now normalized inside `feature()` instead of at buffer entry** — aligning Android with the web and iOS SDKs and ensuring the session first-use dedup keys on the normalized name. Internal change only; recorded data is unaffected.
 
 ### Fixed
 
