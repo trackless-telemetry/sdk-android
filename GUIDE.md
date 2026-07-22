@@ -258,6 +258,8 @@ binding.exportButton.setOnClickListener {
 }
 ```
 
+**Session reach (automatic):** The first use of each feature name within a session is automatically flagged (as an aggregate first-use count) so the dashboard can report **session reach** — the share of sessions that used a feature at least once. This is fully automatic; call `feature(...)` exactly as shown. Names are normalized before the check, so `Trackless.feature("Dark Mode")` and `Trackless.feature("dark_mode")` count as the same feature, and repeated uses within a session — including different `detail` values — count once toward reach. The tracking is in-memory only and resets when the session ends, consistent with the no-cross-session-linking guarantee.
+
 ### Funnel Steps
 
 Track progression through multi-step flows. Each step has a developer-defined index (0-based) that determines its position in the funnel:

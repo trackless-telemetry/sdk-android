@@ -587,4 +587,102 @@ class TracklessClientTest {
         assertEquals(2, exportItem?.count)
         assertEquals(1, importItem?.count)
     }
+
+    // ─── Feature Reach (firstUses) ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("First feature use carries firstUses=1; a repeat in the same session omits it across a flush")
+    fun firstUseMarkedOncePerSessionAndSurvivesFlush() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("export_clicked") // first use → firstUses=1
+        Trackless.flush() // drains the buffer — the first-use set must survive
+        Trackless.feature("export_clicked") // same session, already seen → no firstUses
+        Trackless.flush()
+
+        val featureEvents = payloads.flatMap { it.events }
+            .filter { it.type == EventType.FEATURE && it.name == "export_clicked" }
+        assertEquals(2, featureEvents.size)
+        assertEquals(1, featureEvents.count { it.firstUses == 1 })
+        assertEquals(1, featureEvents.count { it.firstUses == null })
+    }
+
+    @Test
+    @DisplayName("First-use set resets when the session ends")
+    fun firstUseSetResetsOnSessionEnd() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("export_clicked") // session 1 first use → firstUses=1
+        Trackless.destroy() // ends session 1 (clears the set) and flushes
+
+        configure()
+        Trackless.feature("export_clicked") // session 2 first use → firstUses=1 again
+        Trackless.flush()
+
+        val firstUses = payloads.flatMap { it.events }
+            .filter { it.type == EventType.FEATURE && it.name == "export_clicked" }
+            .map { it.firstUses }
+        assertEquals(2, firstUses.size)
+        assertTrue(firstUses.all { it == 1 })
+    }
+
+    @Test
+    @DisplayName("Normalize before dedup: raw and normalized spellings dedup together")
+    fun normalizeBeforeDedup() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("Dark Mode") // normalizes to "dark_mode" → first use → firstUses=1
+        Trackless.flush()
+        Trackless.feature("dark_mode") // same normalized name → firstUses omitted
+        Trackless.flush()
+
+        val featureEvents = payloads.flatMap { it.events }
+            .filter { it.type == EventType.FEATURE && it.name == "dark_mode" }
+        assertEquals(2, featureEvents.size)
+        assertEquals(1, featureEvents.count { it.firstUses == 1 })
+        assertEquals(1, featureEvents.count { it.firstUses == null })
+    }
+
+    @Test
+    @DisplayName("Distinct feature names each count as a first use")
+    fun distinctNamesEachFirstUse() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.feature("export_clicked")
+        Trackless.feature("import_clicked")
+        Trackless.flush()
+
+        val featureEvents = payloadSlot.captured.events.filter { it.type == EventType.FEATURE }
+        assertEquals(2, featureEvents.size)
+        assertTrue(featureEvents.all { it.firstUses == 1 })
+    }
+
+    @Test
+    @DisplayName("firstUses is emitted only on feature events")
+    fun firstUsesOnlyOnFeatureEvents() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.view("home")
+        Trackless.performance("api_call", 1.0)
+        Trackless.error("crash")
+        Trackless.funnel("checkout", 0, "cart")
+        Trackless.feature("export_clicked")
+        Trackless.flush()
+
+        val events = payloadSlot.captured.events
+        val nonFeature = events.filter { it.type != EventType.FEATURE }
+        assertTrue(nonFeature.isNotEmpty())
+        assertTrue(nonFeature.all { it.firstUses == null })
+        assertEquals(1, events.single { it.type == EventType.FEATURE }.firstUses)
+    }
 }
