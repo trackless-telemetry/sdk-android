@@ -317,4 +317,50 @@ class EventBufferTest {
         assertTrue(json.has("firstUses"))
         assertEquals(1, json.getInt("firstUses"))
     }
+
+    // ─── firstOccurrences rollup ────────────────────────────────────────────
+
+    @Test
+    @DisplayName("addAggregatable sums firstOccurrences across the rollup")
+    fun addAggregatableSumsFirstOccurrences() {
+        // Two session first-occurrences (firstOccurrences = 1) plus one repeat
+        // roll up to the same key: count = 3, firstOccurrences = 2.
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed", firstOccurrences = 1))
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed"))
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed", firstOccurrences = 1))
+
+        assertEquals(1, buffer.totalSize)
+
+        val event = buffer.drain("production", context)[0].events[0]
+        assertEquals(3, event.count)
+        assertEquals(2, event.firstOccurrences)
+    }
+
+    @Test
+    @DisplayName("A rollup with no first occurrence omits firstOccurrences on the wire")
+    fun repeatOnlyRollupOmitsFirstOccurrencesOnWire() {
+        // A repeat-only entry: the name was already seen this session, so
+        // firstOccurrences is never set. It must be absent on the wire — the
+        // backend rejects firstOccurrences:0.
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed", severity = ErrorSeverity.ERROR))
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed", severity = ErrorSeverity.ERROR))
+
+        val event = buffer.drain("production", context)[0].events[0]
+        assertEquals(2, event.count)
+        assertNull(event.firstOccurrences)
+
+        val json = event.toJson()
+        assertFalse(json.has("firstOccurrences"))
+        assertEquals(2, json.getInt("count"))
+    }
+
+    @Test
+    @DisplayName("A first-occurrence rollup emits firstOccurrences on the wire")
+    fun firstOccurrenceRollupEmitsFirstOccurrencesOnWire() {
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "payment_failed", firstOccurrences = 1))
+
+        val json = buffer.drain("production", context)[0].events[0].toJson()
+        assertTrue(json.has("firstOccurrences"))
+        assertEquals(1, json.getInt("firstOccurrences"))
+    }
 }

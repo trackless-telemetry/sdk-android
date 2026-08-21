@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.3.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.4.0")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.3.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.4.0'
 }
 ```
 
@@ -352,6 +352,8 @@ try {
 
 **When to use:** Caught exceptions, failed network requests, validation errors, any error you want to trend over time.
 
+**Session reach (automatic):** The first occurrence of each error name within a session is automatically flagged (as an aggregate first-occurrence count) so the dashboard can report **session reach** — the share of sessions that hit an error at least once, as distinct from the raw error volume a single looping session can inflate. This is fully automatic; call `error(...)` exactly as shown. Names are normalized before the check, so `Trackless.error("Payment Failed")` and `Trackless.error("payment_failed")` count as the same error, and repeated occurrences within a session — including different `severity` or `code` values — count once toward reach. The tracking is in-memory only and resets when the session ends, consistent with the no-cross-session-linking guarantee.
+
 ## 4. Event Naming Rules
 
 All event fields (`name`, `detail`, `step`, `code`) are automatically normalized before buffering:
@@ -617,7 +619,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.3.0"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.4.0"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
 
 ### Google Play Data Safety
 

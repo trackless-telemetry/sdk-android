@@ -107,7 +107,8 @@ internal class EventBuffer(
         if (existing != null) {
             synchronized(existing) {
                 existing.count = (existing.count ?: 1) + (event.count ?: 1)
-                existing.firstUses = sumFirstUses(existing.firstUses, event.firstUses)
+                existing.firstUses = sumFirstMarkers(existing.firstUses, event.firstUses)
+                existing.firstOccurrences = sumFirstMarkers(existing.firstOccurrences, event.firstOccurrences)
             }
             return true
         }
@@ -119,18 +120,20 @@ internal class EventBuffer(
         if (previous != null) {
             synchronized(previous) {
                 previous.count = (previous.count ?: 1) + (event.count ?: 1)
-                previous.firstUses = sumFirstUses(previous.firstUses, event.firstUses)
+                previous.firstUses = sumFirstMarkers(previous.firstUses, event.firstUses)
+                previous.firstOccurrences = sumFirstMarkers(previous.firstOccurrences, event.firstOccurrences)
             }
         }
         return true
     }
 
     /**
-     * Sum two nullable first-use counters, treating null as 0. Returns null when
-     * the total is 0 so a rollup carrying no first-use stays absent on the wire
-     * (the backend rejects `firstUses:0`).
+     * Sum two nullable first-marker counters (`firstUses` for features,
+     * `firstOccurrences` for errors), treating null as 0. Returns null when the
+     * total is 0 so a rollup carrying no first use/occurrence stays absent on
+     * the wire (the backend rejects a 0 value).
      */
-    private fun sumFirstUses(a: Int?, b: Int?): Int? {
+    private fun sumFirstMarkers(a: Int?, b: Int?): Int? {
         val sum = (a ?: 0) + (b ?: 0)
         return if (sum > 0) sum else null
     }

@@ -69,6 +69,7 @@ object Trackless {
     private var sessionManager: SessionManager = SessionManager()
     private var funnelTracker: FunnelTracker = FunnelTracker()
     private var featureTracker: FeatureTracker = FeatureTracker()
+    private var errorTracker: ErrorTracker = ErrorTracker()
 
     private var appContext: Context? = null
     private var scheduler: ScheduledExecutorService? = null
@@ -110,6 +111,7 @@ object Trackless {
             sessionManager = SessionManager()
             funnelTracker = FunnelTracker()
             featureTracker = FeatureTracker()
+            errorTracker = ErrorTracker()
             this.context = ContextDetection.detect(context)
 
             bufferFullWarned.set(false)
@@ -225,20 +227,33 @@ object Trackless {
 
     /**
      * Record an error event.
+     *
+     * The name is normalized in-method (mirroring [feature]) so the
+     * first-occurrence dedup keys on the normalized name: the first occurrence
+     * of each error name in a session is marked with `firstOccurrences = 1`
+     * (feeding server-side session reach), and later occurrences of the same
+     * name — including different `severity` or `code` variants — omit the field.
+     * The dedup set survives buffer flushes and resets at session end.
      */
     fun error(name: String, severity: ErrorSeverity = ErrorSeverity.ERROR, code: String? = null) {
         if (!canRecord()) return
-        val added = addEvent(
+        val normalizedName = normalizeName(name) ?: return
+        val normalizedCode = code?.takeIf { it.isNotEmpty() }?.let { FeatureValidator.normalize(it) }
+        val isFirstOccurrence = errorTracker.firstOccurrence(normalizedName)
+        addToBuffer(
             TracklessEvent(
                 type = EventType.ERROR,
-                name = name,
+                name = normalizedName,
                 severity = severity,
-                code = code.takeIf { !it.isNullOrEmpty() },
+                code = normalizedCode,
+                firstOccurrences = if (isFirstOccurrence) 1 else null,
             )
         )
-        if (!added) return
+        if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
+            performFlush()
+        }
         sessionManager.recordActivity()
-        debug("error — $name severity=${severity.value}${if (code != null) " code=$code" else ""}")
+        debug("error — $normalizedName severity=${severity.value}${if (normalizedCode != null) " code=$normalizedCode" else ""}")
     }
 
     // ─── Control Methods ─────────────────────────────────────────────────────
@@ -257,6 +272,7 @@ object Trackless {
                 sessionManager.destroy()
                 funnelTracker.clear()
                 featureTracker.clear()
+                errorTracker.clear()
                 stopPeriodicFlush()
                 unregisterLifecycleCallbacks()
             } else if (!destroyed.get() && configured.get()) {
@@ -296,6 +312,7 @@ object Trackless {
             unregisterLifecycleCallbacks()
             funnelTracker.clear()
             featureTracker.clear()
+            errorTracker.clear()
             configured.set(false)
             enabled.set(false)
             appContext = null
@@ -447,6 +464,7 @@ object Trackless {
         val result = sessionManager.end() ?: return
         funnelTracker.clear()
         featureTracker.clear()
+        errorTracker.clear()
         addToBuffer(
             TracklessEvent(
                 type = EventType.SESSION,
@@ -603,6 +621,7 @@ object Trackless {
             sessionManager = SessionManager()
             funnelTracker = FunnelTracker()
             featureTracker = FeatureTracker()
+            errorTracker = ErrorTracker()
             context = EventContext()
             apiKey = ""
             endpoint = ""

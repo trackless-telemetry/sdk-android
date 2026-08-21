@@ -76,6 +76,11 @@ internal data class EventContext(
  *   server-side session-reach analytics. Absent (null) when this rollup carries
  *   no first-use — the wire format omits it, and the backend rejects `firstUses`
  *   on non-feature events or values outside `[1, count]`.
+ * - `firstOccurrences`: error events only. The number of sessions that hit this
+ *   error for the first time within the rolled-up window (>= 1). The error-side
+ *   mirror of `firstUses`. Absent (null) when this rollup carries no first
+ *   occurrence — the wire format omits it, and the backend rejects
+ *   `firstOccurrences` on non-error events or values outside `[1, count]`.
  * - `detail`: optional detail for view and feature events.
  * - `step` / `stepIndex`: funnel events only.
  * - `duration`: single performance measurement. Mutually exclusive with `durations`.
@@ -87,6 +92,7 @@ internal data class TracklessEvent(
     val name: String,
     var count: Int? = null,
     var firstUses: Int? = null,
+    var firstOccurrences: Int? = null,
     val detail: String? = null,
     val step: String? = null,
     val stepIndex: Int? = null,
@@ -104,6 +110,9 @@ internal data class TracklessEvent(
         // Only emit firstUses when it carries a real first-use (>= 1). A rollup
         // with no first-use leaves it null/0; the backend rejects firstUses:0.
         firstUses?.let { if (it >= 1) json.put("firstUses", it) }
+        // Same positive-only rule for the error-side marker: a rollup with no
+        // first occurrence omits the key entirely (the backend rejects 0).
+        firstOccurrences?.let { if (it >= 1) json.put("firstOccurrences", it) }
         if (detail != null) json.put("detail", detail)
         if (step != null) json.put("step", step)
         if (stepIndex != null) json.put("stepIndex", stepIndex)

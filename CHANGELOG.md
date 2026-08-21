@@ -5,6 +5,16 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-21
+
+### Added
+
+- **Error reach (session first-occurrence tracking)** — the first occurrence of each error name within a session is now flagged so the dashboard can report **session reach** for errors (the share of sessions that hit an error at least once), rather than only raw error volume that a single looping session can inflate. Tracking is fully automatic — existing `error()` calls benefit with no code changes. Names are normalized before the first-occurrence check, so `error("Payment Failed")` and `error("payment_failed")` are recognized as the same error; repeated occurrences within a session — including different `severity` or `code` variants — are not re-flagged. The first-occurrence set is in-memory only, survives buffer flushes, and resets when the session ends (consistent with the no-cross-session-linking guarantee). Only an aggregate count is transmitted; no identifiers are involved.
+
+### Changed
+
+- **Error names and codes are now normalized inside `error()` instead of at buffer entry** — mirroring `feature()` and ensuring the session first-occurrence dedup keys on the normalized name. Internal change only; recorded data is unaffected.
+
 ## [0.3.0] - 2026-07-21
 
 ### Added

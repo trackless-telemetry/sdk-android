@@ -66,7 +66,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.3.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.4.0")
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.3.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.4.0'
 }
 ```
 
@@ -194,7 +194,7 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 | `appVersion`      | `"2.1.0"`       | `PackageManager`                 |
 | `buildNumber`     | `"142"`         | `PackageManager`                 |
 | `daysSinceInstall` | `45`            | `PackageManager.firstInstallTime` |
-| `sdkVersion`      | `"android/0.3.0"` | SDK platform and version identifier |
+| `sdkVersion`      | `"android/0.4.0"` | SDK platform and version identifier |
 | `distributionChannel` | `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, `"unknown"` | `PackageManager` installer + build config |
 
 ## What Trackless Does NOT Collect
