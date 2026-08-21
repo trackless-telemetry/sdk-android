@@ -15,6 +15,7 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
@@ -684,5 +685,142 @@ class TracklessClientTest {
         assertTrue(nonFeature.isNotEmpty())
         assertTrue(nonFeature.all { it.firstUses == null })
         assertEquals(1, events.single { it.type == EventType.FEATURE }.firstUses)
+    }
+
+    // ─── Error Reach (firstOccurrences) ─────────────────────────────────────
+
+    @Test
+    @DisplayName("First error carries firstOccurrences=1; a repeat in the same session omits it across a flush")
+    fun firstOccurrenceMarkedOncePerSessionAndSurvivesFlush() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("payment_failed") // first occurrence → firstOccurrences=1
+        Trackless.flush() // drains the buffer — the first-occurrence set must survive
+        Trackless.error("payment_failed") // same session, already seen → no firstOccurrences
+        Trackless.flush()
+
+        val errorEvents = payloads.flatMap { it.events }
+            .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
+        assertEquals(2, errorEvents.size)
+        assertEquals(1, errorEvents.count { it.firstOccurrences == 1 })
+        assertEquals(1, errorEvents.count { it.firstOccurrences == null })
+    }
+
+    @Test
+    @DisplayName("First-occurrence set resets when the session ends")
+    fun firstOccurrenceSetResetsOnSessionEnd() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("payment_failed") // session 1 first occurrence → firstOccurrences=1
+        Trackless.destroy() // ends session 1 (clears the set) and flushes
+
+        configure()
+        Trackless.error("payment_failed") // session 2 first occurrence → firstOccurrences=1 again
+        Trackless.flush()
+
+        val firstOccurrences = payloads.flatMap { it.events }
+            .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
+            .map { it.firstOccurrences }
+        assertEquals(2, firstOccurrences.size)
+        assertTrue(firstOccurrences.all { it == 1 })
+    }
+
+    @Test
+    @DisplayName("Normalize before dedup: raw and normalized error spellings dedup together")
+    fun normalizeBeforeErrorDedup() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("Payment Failed") // normalizes to "payment_failed" → firstOccurrences=1
+        Trackless.flush()
+        Trackless.error("payment_failed") // same normalized name → firstOccurrences omitted
+        Trackless.flush()
+
+        val errorEvents = payloads.flatMap { it.events }
+            .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
+        assertEquals(2, errorEvents.size)
+        assertEquals(1, errorEvents.count { it.firstOccurrences == 1 })
+        assertEquals(1, errorEvents.count { it.firstOccurrences == null })
+    }
+
+    @Test
+    @DisplayName("Distinct error names each count as a first occurrence")
+    fun distinctErrorNamesEachFirstOccurrence() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("payment_failed")
+        Trackless.error("api_timeout")
+        Trackless.flush()
+
+        val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
+        assertEquals(2, errorEvents.size)
+        assertTrue(errorEvents.all { it.firstOccurrences == 1 })
+    }
+
+    @Test
+    @DisplayName("Severity and code variants of one name share a single first occurrence")
+    fun severityAndCodeVariantsShareOneFirstOccurrence() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("payment_failed", ErrorSeverity.ERROR, "E001")
+        Trackless.error("payment_failed", ErrorSeverity.WARNING, "E002")
+        Trackless.error("payment_failed", ErrorSeverity.FATAL)
+        Trackless.flush()
+
+        // Three distinct rollup keys (severity/code differ), one first occurrence total.
+        val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
+        assertEquals(3, errorEvents.size)
+        assertEquals(1, errorEvents.sumOf { it.firstOccurrences ?: 0 })
+    }
+
+    @Test
+    @DisplayName("firstOccurrences is emitted only on error events")
+    fun firstOccurrencesOnlyOnErrorEvents() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.view("home")
+        Trackless.performance("api_call", 1.0)
+        Trackless.feature("export_clicked")
+        Trackless.funnel("checkout", 0, "cart")
+        Trackless.error("crash")
+        Trackless.flush()
+
+        val events = payloadSlot.captured.events
+        val nonError = events.filter { it.type != EventType.ERROR }
+        assertTrue(nonError.isNotEmpty())
+        assertTrue(nonError.all { it.firstOccurrences == null })
+        assertEquals(1, events.single { it.type == EventType.ERROR }.firstOccurrences)
+    }
+
+    @Test
+    @DisplayName("A repeat-only error rollup omits firstOccurrences on the wire")
+    fun repeatOnlyErrorRollupOmitsFirstOccurrencesOnWire() {
+        val payloads = mutableListOf<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        Trackless.error("payment_failed") // first occurrence, flushed away
+        Trackless.flush()
+        Trackless.error("payment_failed")
+        Trackless.error("payment_failed")
+        Trackless.flush()
+
+        val repeatEvent = payloads.last().events.single { it.type == EventType.ERROR }
+        assertEquals(2, repeatEvent.count)
+
+        val json = repeatEvent.toJson()
+        assertFalse(json.has("firstOccurrences"))
+        assertEquals(2, json.getInt("count"))
     }
 }
