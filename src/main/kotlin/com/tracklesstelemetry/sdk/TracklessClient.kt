@@ -63,6 +63,22 @@ object Trackless {
     private const val BUFFER_FLUSH_THRESHOLD = 100
     private const val MAX_FIELD_LENGTH = 100
 
+    /**
+     * Reason text for a name that fails normalization.
+     *
+     * The raw name is deliberately omitted from the warning and the error.
+     * Normalization only fails *after* PII stripping has run, so no
+     * PII-stripped form of the name survives to report. The inputs that
+     * actually reach this branch are the ones the PII guard does *not*
+     * recognize — anything it does recognize is replaced with the literal
+     * "[REDACTED]", which normalizes to a non-empty "redacted" and is
+     * accepted. What is left is chiefly non-Latin-script text, which includes
+     * personal names. Emitting it would write that value to logcat and — via
+     * `onError` — hand it to whatever crash reporter the host app uses.
+     */
+    private const val INVALID_EVENT_NAME_REASON =
+        "it normalized to an empty or disallowed value (raw name omitted: it may contain PII)"
+
     private var context: EventContext = EventContext()
     private var buffer: EventBuffer = EventBuffer()
     private var circuitBreaker: CircuitBreaker = CircuitBreaker()
@@ -138,9 +154,11 @@ object Trackless {
      */
     fun view(name: String, detail: String? = null) {
         if (!canRecord()) return
-        if (!addEvent(TracklessEvent(type = EventType.VIEW, name = name, detail = detail.takeIf { !it.isNullOrEmpty() }))) return
+        val recorded = addEvent(
+            TracklessEvent(type = EventType.VIEW, name = name, detail = detail.takeIf { !it.isNullOrEmpty() })
+        ) ?: return
         sessionManager.recordActivity()
-        debug("view — $name${if (detail != null) " detail=$detail" else ""}")
+        debug("view — ${recorded.name}${if (recorded.detail != null) " detail=${recorded.detail}" else ""}")
     }
 
     /**
@@ -212,17 +230,16 @@ object Trackless {
         if (!canRecord()) return
         if (durationSeconds < 0) return
         if (thresholdSeconds != null && thresholdSeconds <= 0) return
-        val added = addEvent(
+        val recorded = addEvent(
             TracklessEvent(
                 type = EventType.PERFORMANCE,
                 name = name,
                 duration = durationSeconds,
                 threshold = thresholdSeconds,
             )
-        )
-        if (!added) return
+        ) ?: return
         sessionManager.recordActivity()
-        debug("performance — $name duration=${durationSeconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""}")
+        debug("performance — ${recorded.name} duration=${durationSeconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""}")
     }
 
     /**
@@ -326,17 +343,22 @@ object Trackless {
     /**
      * Add an event to the buffer with validation.
      *
-     * @return true if the event passed validation, false if it was rejected
+     * Callers pass a raw, caller-supplied [event] name here (see [view] and
+     * [performance]), so the rejection warning must not echo it back.
+     *
+     * @return the normalized event that was buffered, or null if it was
+     *   rejected. Returning the normalized event lets callers log the
+     *   PII-stripped name rather than the raw input they passed in.
      */
-    private fun addEvent(event: TracklessEvent): Boolean {
+    private fun addEvent(event: TracklessEvent): TracklessEvent? {
         try {
-            if (!enabled.get() || destroyed.get() || !configured.get()) return false
+            if (!enabled.get() || destroyed.get() || !configured.get()) return null
 
             val normalizedName = FeatureValidator.normalize(event.name)
             if (normalizedName == null) {
-                warn("event name rejected: \"${event.name}\"")
-                notifyError(IllegalArgumentException("Invalid event name: ${event.name}"))
-                return false
+                warn("event name rejected — $INVALID_EVENT_NAME_REASON")
+                notifyError(IllegalArgumentException("Invalid event name — $INVALID_EVENT_NAME_REASON"))
+                return null
             }
 
             val normalizedEvent = event.copy(
@@ -351,10 +373,10 @@ object Trackless {
             if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
                 performFlush()
             }
-            return true
+            return normalizedEvent
         } catch (_: Throwable) {
             // Never throws
-            return false
+            return null
         }
     }
 
@@ -432,11 +454,17 @@ object Trackless {
         return enabled.get() && !destroyed.get() && configured.get()
     }
 
+    /**
+     * Normalize a caller-supplied event name, warning when it is rejected.
+     *
+     * The name is omitted from both the warning and the error — see
+     * [INVALID_EVENT_NAME_REASON].
+     */
     private fun normalizeName(name: String): String? {
         val normalized = FeatureValidator.normalize(name)
         if (normalized == null) {
-            warn("event name rejected: \"$name\"")
-            notifyError(IllegalArgumentException("Invalid event name: $name"))
+            warn("event name rejected — $INVALID_EVENT_NAME_REASON")
+            notifyError(IllegalArgumentException("Invalid event name — $INVALID_EVENT_NAME_REASON"))
             return null
         }
         return normalized

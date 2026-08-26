@@ -1,0 +1,36 @@
+# Trackless Android SDK — AI Integration Rules
+
+This package is `com.tracklesstelemetry:sdk-android`, a privacy-first Android analytics SDK. See GUIDE.md in this directory for the complete integration guide.
+
+## Quick Reference
+
+1. Install: add `com.tracklesstelemetry:sdk-android` (latest release) to your Gradle dependencies — see GUIDE.md for the snippet
+2. Configure once in Application.onCreate with just an API key:
+   ```kotlin
+   import com.tracklesstelemetry.sdk.Trackless
+   import com.tracklesstelemetry.sdk.TracklessConfig
+   Trackless.configure(context = this, config = TracklessConfig(apiKey = "tl_your_api_key_here"))
+   ```
+3. Call typed event methods anywhere:
+   - `Trackless.view("home")` — screen views (optional detail: `Trackless.view("settings", "notifications")`)
+   - `Trackless.feature("export_clicked")` — feature usage (optional detail: `Trackless.feature("theme", "dark")`)
+   - `Trackless.funnel("checkout", 0, "view_cart")` — multi-step flows
+   - `Trackless.performance("api_fetch", durationSeconds = 0.342)` — timing in seconds (optional threshold: `Trackless.performance("api_fetch", durationSeconds = 0.342, thresholdSeconds = 2.0)`)
+   - `Trackless.error("payment_failed", severity = ErrorSeverity.ERROR, code = "DECLINED")` — error tracking
+
+## Important Rules
+
+- Do NOT create an analytics wrapper class (`AnalyticsService`, `AnalyticsHelper`, a Hilt/Dagger-injected wrapper) — `Trackless` is already a thread-safe singleton object; call it directly
+- `detail` is a SEPARATE parameter, never concatenated into the name: `Trackless.feature("theme", "dark")`, not `Trackless.feature("theme_dark")` — the dashboard groups detail distributions per name
+- The endpoint defaults to `https://api.tracklesstelemetry.com` — do NOT require the user to provide it
+- Store the API key in `local.properties` + BuildConfig, not hardcoded in committed source
+- Register the Application class in AndroidManifest.xml: `android:name=".MyApp"`
+- Event names and fields (`detail`, `step`, `code`) are auto-normalized: lowercased, spaces/special chars replaced with `_`, trimmed, truncated to 100 chars. Developers can pass natural strings like `"Sign Up Button"` (becomes `"sign_up_button"`). Use the optional `detail` parameter on `feature()` and `view()` to distinguish variants — dashboard auto-groups features with detail values into donut charts
+- Performance duration is in **seconds** (not milliseconds or nanoseconds)
+- All methods are non-blocking, thread-safe, and never throw
+- Environment auto-detects: FLAG_DEBUGGABLE → SANDBOX, otherwise PRODUCTION
+- App version and build number are auto-read from PackageManager
+- No GAID/SSAID — no permissions required
+- Sessions are managed automatically via ActivityLifecycleCallbacks
+- For Compose, use `LaunchedEffect` on `currentBackStackEntryAsState()` for view tracking
+- ProGuard/R8 rules ship with the SDK — no extra configuration needed

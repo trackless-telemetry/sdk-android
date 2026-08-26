@@ -7,9 +7,11 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.util.Log
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
+import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -83,16 +85,40 @@ class WarningBehaviorTest {
         unmockkAll()
     }
 
-    private fun configure(suppressWarnings: Boolean = false) {
+    private fun configure(
+        suppressWarnings: Boolean = false,
+        debugLogging: Boolean = false,
+        onError: ((Throwable) -> Unit)? = null,
+    ) {
         Trackless.configure(
             context,
             TracklessConfig(
                 apiKey = testApiKey,
                 endpoint = testEndpoint,
+                onError = onError,
                 flushIntervalSeconds = 999_999L,
+                debugLogging = debugLogging,
                 suppressWarnings = suppressWarnings,
             ),
         )
+    }
+
+    /**
+     * Capture everything the SDK writes to logcat — the surface that actually
+     * persists on the developer's device.
+     */
+    private fun captureLogcat(): MutableList<String> {
+        val lines = mutableListOf<String>()
+        mockkStatic(Log::class)
+        every { Log.w(any<String>(), any<String>()) } answers {
+            lines.add(secondArg())
+            0
+        }
+        every { Log.d(any<String>(), any<String>()) } answers {
+            lines.add(secondArg())
+            0
+        }
+        return lines
     }
 
     // ─── Pre-Configure Drops ────────────────────────────────────────────────
@@ -172,5 +198,108 @@ class WarningBehaviorTest {
 
         val bufferWarnings = warnings.filter { it.contains("buffer full") }
         assertEquals(2, bufferWarnings.size)
+    }
+
+    // ─── Rejected Names Never Echo Raw Input ────────────────────────────────
+
+    /*
+     * A rejected name is raw, pre-normalization caller input: it reaches the
+     * warning *because* normalization failed, so no PII-stripped form of it
+     * exists, and it must not be written to logcat or handed to `onError`
+     * (which host apps routinely forward to a crash reporter).
+     *
+     * On which inputs actually reach this path: PII stripping replaces a
+     * matched email/phone/SSN with the literal "[REDACTED]", which normalizes
+     * to the non-empty "redacted". A name containing a *recognized* email
+     * therefore always normalizes successfully and never reaches the rejection
+     * branch. The names that do reach it are the ones the PII guard does not
+     * recognize — most importantly non-Latin-script text, which includes
+     * personal names.
+     *
+     * Android rejects names at two sites: normalizeName() (feature, funnel,
+     * error) and addEvent() (view, performance). Both are covered here.
+     */
+
+    private val rejectedName = "Ольга Иванова"
+    private val email = "user@example.com"
+
+    @Test
+    @DisplayName("Rejection warning omits the raw name")
+    fun rejectionWarningOmitsRawName() {
+        configure()
+        val logcat = captureLogcat()
+
+        Trackless.feature(rejectedName)
+
+        assertEquals(1, warnings.count { it.contains("event name rejected") })
+        assertTrue(warnings.none { it.contains(rejectedName) })
+        assertTrue(logcat.isNotEmpty())
+        assertTrue(logcat.none { it.contains(rejectedName) })
+    }
+
+    @Test
+    @DisplayName("Rejection error omits the raw name")
+    fun rejectionErrorOmitsRawName() {
+        val errors = mutableListOf<Throwable>()
+        configure(onError = { errors.add(it) })
+
+        Trackless.feature(rejectedName)
+
+        assertEquals(1, errors.size)
+        assertTrue(errors[0].message?.contains("Invalid event name") == true)
+        assertTrue(errors.none { it.message?.contains(rejectedName) == true })
+    }
+
+    @Test
+    @DisplayName("Every entry point keeps a rejected name out of logcat and errors")
+    fun everyEntryPointOmitsRejectedName() {
+        val errors = mutableListOf<Throwable>()
+        configure(debugLogging = true, onError = { errors.add(it) })
+        val logcat = captureLogcat()
+
+        // view() and performance() reject inside addEvent(); feature(), funnel()
+        // and error() reject inside normalizeName().
+        Trackless.view(rejectedName)
+        Trackless.feature(rejectedName)
+        Trackless.funnel(rejectedName, 0, rejectedName)
+        Trackless.performance(rejectedName, 1.0)
+        Trackless.error(rejectedName)
+
+        val emitted = logcat + warnings + errors.mapNotNull { it.message }
+        assertEquals(5, warnings.count { it.contains("event name rejected") })
+        assertEquals(5, errors.size)
+        assertTrue(emitted.none { it.contains(rejectedName) })
+    }
+
+    @Test
+    @DisplayName("An email in an accepted name is redacted before it reaches logcat")
+    fun emailIsRedactedBeforeLogcat() {
+        val errors = mutableListOf<Throwable>()
+        configure(debugLogging = true, onError = { errors.add(it) })
+        val logcat = captureLogcat()
+
+        // Accepted names: PII stripping turns the email into "redacted", so
+        // these are buffered — but the debug line must log the normalized name,
+        // not the raw input the caller passed.
+        Trackless.view("profile $email", email)
+        Trackless.feature("signup $email", email)
+        Trackless.performance("load $email", 1.0)
+
+        val emitted = logcat + warnings + errors.mapNotNull { it.message }
+        assertTrue(emitted.isNotEmpty())
+        assertTrue(emitted.none { it.contains(email) })
+        assertTrue(emitted.none { it.contains("@") })
+    }
+
+    @Test
+    @DisplayName("Rejection warning respects suppressWarnings")
+    fun rejectionWarningSuppressed() {
+        configure(suppressWarnings = true)
+        val logcat = captureLogcat()
+
+        Trackless.feature(rejectedName)
+
+        assertTrue(warnings.isEmpty())
+        assertTrue(logcat.none { it.contains("event name rejected") })
     }
 }

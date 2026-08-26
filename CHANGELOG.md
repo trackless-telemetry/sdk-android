@@ -5,6 +5,25 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-26
+
+### Added
+
+- **AGENTS.md** — a README for coding agents, following the [agents.md](https://agents.md) convention: the critical integration rules, the exact public API surface, naming and environment rules in brief, and a pointer to GUIDE.md as the authoritative guide.
+- **Verification and troubleshooting documentation** — GUIDE.md gains a "Verify the Integration" section (the exact logcat signal strings an agent can check unattended — tag `Trackless`, ending at `flush success — status=200` — including the warning that `flush()` performs network I/O on the calling thread and must run off the main thread, plus the dashboard's "See your first feature data" checklist confirmation) and a troubleshooting table decoding the ingest endpoint's deliberately generic responses (401 wrong/regenerated key, 402 quota reached, 429 rate limit, 5xx/network with the circuit breaker's actual behavior — failed batches are not re-sent; backoff only pauses future flushes, 30s → 60m). AGENTS.md gains a matching compact "Verify" block.
+- **Anti-interpolation rule documented** — event fields must come from finite sets enumerable at write time; never interpolate runtime values (`Trackless.feature("export_$format")` is the failure mode). Stated as a fourth critical rule in AGENTS.md and a subsection under GUIDE.md's event-naming rules, including the per-app daily cardinality budget that drops new `(type, name, detail)` tuples beyond it.
+- **.cursorrules completes the critical rules** — now states the no-wrapper rule and the detail-is-a-separate-parameter rule alongside the existing guidance.
+- **API key provenance documented** — GUIDE.md and AGENTS.md now state that the key comes from the dashboard, is shown once at app creation, and must be obtained from the developer — never fabricated or committed as a placeholder posing as real.
+
+### Fixed
+
+- **.cursorrules and AGENTS.md name the published Maven coordinate** — both said `com.tracklesstelemetry:sdk`, but the artifact is published as `com.tracklesstelemetry:sdk-android`; .cursorrules also pinned the stale version 0.2.2. The install line is now version-free (it points at GUIDE.md for the snippet), so it no longer needs a bump on every release.
+
+- **Name-rejection warnings no longer echo raw caller input** — when an event name fails normalization, the logcat warning and the `IllegalArgumentException` passed to `onError` now omit the name entirely and explain why it was rejected. Previously both carried the raw, pre-normalization string, writing it to logcat and handing it to whatever crash reporter the host app forwards `onError` to. Both rejection sites are covered: `normalizeName` (used by `feature`, `funnel`, and `error`) and `addEvent` (used by `view` and `performance`).
+- **`view()` and `performance()` debug lines log the normalized name** — with `debugLogging` enabled, these two methods logged the raw `name` and `detail` the caller passed rather than the normalized, PII-stripped values, so an accepted name containing an email address was written verbatim to logcat. They now log the same normalized values the SDK buffers, matching `feature()`, `funnel()`, `error()`, and the web and iOS SDKs.
+
+No telemetry was ever affected: none of this is buffered or transmitted, and PII stripping still runs before any event reaches the wire.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
