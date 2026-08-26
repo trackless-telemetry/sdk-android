@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.4.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.4.1")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.4.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.4.1'
 }
 ```
 
@@ -79,6 +79,11 @@ dependencies {
 ## 2. Configure
 
 Call `Trackless.configure()` once at app launch — before any events are recorded.
+
+**The API key is a human step.** It comes from the developer's Trackless dashboard
+(`dashboard.tracklesstelemetry.com`) and is shown once, at app creation. `tl_your_api_key_here` is
+a placeholder — ask the developer for the real key. Never fabricate a key or commit a placeholder
+as if it were real.
 
 ### Application Class (Recommended)
 
@@ -398,6 +403,22 @@ Trackless.feature("distance_preset.1_mile")
 
 **Which types support grouping?** The `detail` parameter is supported on `feature` and `view` events. The dashboard's automatic donut-chart visualization applies to both.
 
+### Names Come From Finite Sets — Never Interpolate Runtime Values
+
+Every event field (`name`, `detail`, `step`, `code`) must come from a set you can enumerate at the call site. Never interpolate runtime values — user input, record IDs, URLs, dynamic format strings — into any of them:
+
+```kotlin
+// WRONG — unbounded runtime value interpolated into the name
+Trackless.feature("export_$format")
+Trackless.view("product_$productId")
+
+// CORRECT — fixed names; detail only when its values are a closed set
+Trackless.feature("export", format) // only if format is a fixed set like "csv" / "json" / "pdf"
+Trackless.view("product")
+```
+
+This is enforced server-side: a per-app daily cardinality budget caps the number of distinct `(type, name, detail)` combinations. Once the budget is used up, events with **new** combinations are dropped for the rest of the day (already-seen names keep counting). An interpolated value burns the budget silently — moving it from `name` into `detail` does not help, because `detail` is part of the tuple. If a value is unbounded, map it to a small closed set before recording, or leave it out.
+
 ## 5. Session Lifecycle
 
 Sessions are managed automatically via `ActivityLifecycleCallbacks`. No code needed.
@@ -619,7 +640,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.4.0"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.4.1"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
 
 ### Google Play Data Safety
 
@@ -671,3 +692,48 @@ Trackless.configure(
 ## 11. ProGuard / R8
 
 If you use code shrinking, the SDK ships its own ProGuard rules. No additional configuration needed.
+
+## 12. Verify the Integration
+
+An agent can verify the integration end-to-end without human help: enable debug logging, record one event, force a flush, and read logcat.
+
+```kotlin
+Trackless.configure(
+    context = this,
+    config = TracklessConfig(
+        apiKey = "...", // the real key, from the developer
+        debugLogging = true,
+    )
+)
+
+Trackless.feature("integration_test")
+Thread { Trackless.flush() }.start() // flush() performs network I/O on the calling thread
+```
+
+**`Trackless.flush()` sends synchronously on the calling thread.** From the main thread, Android raises `NetworkOnMainThreadException`, which the SDK swallows and logs as `flush failed — network error`. Call `flush()` from a background thread or a coroutine on `Dispatchers.IO` — or skip the manual flush and background the app, which triggers the lifecycle flush.
+
+The SDK logs to **logcat** with tag `Trackless` (`adb logcat -s Trackless`). Look for these signals, in order:
+
+| Signal                                                                            | Level | Meaning                                              |
+| ---------------------------------------------------------------------------------- | ----- | ---------------------------------------------------- |
+| `configured — env=sandbox endpoint=https://api.tracklesstelemetry.com flush=60s`  | D     | `configure()` ran                                    |
+| `feature — integration_test`                                                      | D     | the event was recorded and buffered                  |
+| `flush — 1 events`                                                                | D     | a batch is being sent                                |
+| `flush success — status=200`                                                      | D     | the ingest endpoint accepted the batch — **success** |
+| `flush failed — status=...`, `flush rejected — status=...`, `flush failed — network error` | W | the send failed — decode with Section 13     |
+
+Debug lines use `Log.d` and appear only with `debugLogging = true`. Failure lines use `Log.w` and appear unless `suppressWarnings = true`.
+
+The human-visible confirmation: once the first event lands, the app's getting-started checklist in the Trackless dashboard marks **"See your first feature data"** as complete.
+
+## 13. Troubleshooting
+
+The ingest endpoint's error responses are deliberately generic on the wire — they never disclose which rule was broken, how close the app is to a limit, or anything about the plan. This table is the decoder for what the SDK logs.
+
+| Logcat signal                                               | What it means                                                                                                                                                                | What to do                                                                                                                                                                              |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flush rejected — status=401`                               | Wrong or regenerated API key. Keys are shown once at creation; regenerating a key invalidates the old one immediately.                                                        | Get the current key from the dashboard and rebuild. Check the BuildConfig field actually carries it.                                                                                      |
+| `flush rejected — status=402`                               | The plan's monthly event quota is reached. The endpoint stops accepting events — nothing converts silently and nothing is billed as overage.                                  | Wait for the next billing period, or upgrade the plan in the dashboard.                                                                                                                   |
+| `flush rejected — status=429`                               | Per-app rate limit. The SDK discards the batch without retrying (4xx never triggers the circuit breaker).                                                                     | Back off. Persistent 429s usually mean an event-volume bug — e.g., recording inside a recomposing Composable. Client-side rollup normally keeps request rates far below the limit.        |
+| `flush failed — status=5xx` or `flush failed — network error` | Server or network problem — or a main-thread `flush()` (see Section 12). The failed batch is **not** re-sent (its events are dropped); a circuit breaker pauses further flush attempts with backoff (30s → 1m → 5m → 15m → 60m), and a single success resets it. While it is open, flushes log `flush skipped — circuit breaker open`. | Rule out the main-thread flush first. Otherwise nothing — subsequent events flush normally once the endpoint recovers. |
+| No request ever sent                                        | The device/emulator is offline, a proxy/firewall blocks the endpoint, or the SDK never recorded anything.                                                                     | Confirm `configure()` ran (a one-time `event dropped — SDK is not configured` warning appears otherwise), that events were recorded (debug lines), and that the circuit breaker is not open from earlier failures. |
