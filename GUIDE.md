@@ -162,7 +162,7 @@ TracklessConfig(
 
 **Environment auto-detection:** If the app has `FLAG_DEBUGGABLE` set, environment defaults to `SANDBOX`. Otherwise `PRODUCTION`. Override by passing `environment` explicitly.
 
-**App version auto-detection:** `appVersion` and `buildNumber` are automatically read from `PackageManager`.
+**App version auto-detection:** `appVersion` and `buildNumber` are automatically read from `PackageManager` (`versionName` and `versionCode`). Your `versionName` must be 1–50 characters of letters, digits, `.`, `_`, and `-` (e.g. `"1.0-beta"`, not `"1.0 beta"`), or ingest rejects every packet — see Section 13.
 
 ## 3. Track Events
 
@@ -691,7 +691,7 @@ Trackless.configure(
 
 ## 11. ProGuard / R8
 
-If you use code shrinking, the SDK ships its own ProGuard rules. No additional configuration needed.
+If you use code shrinking, no additional configuration is needed. The SDK does not ship a consumer rules file and does not need one: it uses no reflection, no runtime class lookup, and no reflective serialization, so R8 has nothing to keep.
 
 ## 12. Verify the Integration
 
@@ -732,8 +732,10 @@ The ingest endpoint's error responses are deliberately generic on the wire — t
 
 | Logcat signal                                               | What it means                                                                                                                                                                | What to do                                                                                                                                                                              |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flush rejected — status=400`                               | The payload failed validation. Ingest validates the whole payload before it looks up the API key and rejects it outright; the SDK drops the batch and does not retry it. Event names and details are normalized before sending, so a 400 on every flush almost always means a context value fails its pattern: `appVersion` and `buildNumber` must be 1–50 characters of letters, digits, `.`, `_`, and `-` only (no spaces or parentheses). | Check the app's Gradle `versionName`, including any `versionNameSuffix` — the SDK reads it from `PackageManager` as `appVersion`. A value such as `"1.0 beta"` or `"1.0 (42)"` makes every packet fail; use a conforming value such as `"1.0-beta"` and rebuild. `buildNumber` comes from `versionCode`, which is always numeric. |
 | `flush rejected — status=401`                               | Wrong or regenerated API key. Keys are shown once at creation; regenerating a key invalidates the old one immediately.                                                        | Get the current key from the dashboard and rebuild. Check the BuildConfig field actually carries it.                                                                                      |
 | `flush rejected — status=402`                               | The plan's monthly event quota is reached. The endpoint stops accepting events — nothing converts silently and nothing is billed as overage.                                  | Wait for the next billing period, or upgrade the plan in the dashboard.                                                                                                                   |
+| `flush rejected — status=413`                               | The request body was over the 50 KB ingest limit or arrived without a `Content-Length` header. The SDK splits batches below 50 KB, so this points to a proxy or custom endpoint that rewrites the request, or a modified client. | Send to the Trackless endpoint directly, or make sure the proxy forwards the body unchanged with its `Content-Length`. |
 | `flush rejected — status=429`                               | Per-app rate limit. The SDK discards the batch without retrying (4xx never triggers the circuit breaker).                                                                     | Back off. Persistent 429s usually mean an event-volume bug — e.g., recording inside a recomposing Composable. Client-side rollup normally keeps request rates far below the limit.        |
 | `flush failed — status=5xx` or `flush failed — network error` | Server or network problem — or a main-thread `flush()` (see Section 12). The failed batch is **not** re-sent (its events are dropped); a circuit breaker pauses further flush attempts with backoff (30s → 1m → 5m → 15m → 60m), and a single success resets it. While it is open, flushes log `flush skipped — circuit breaker open`. | Rule out the main-thread flush first. Otherwise nothing — subsequent events flush normally once the endpoint recovers. |
 | No request ever sent                                        | The device/emulator is offline, a proxy/firewall blocks the endpoint, or the SDK never recorded anything.                                                                     | Confirm `configure()` ran (a one-time `event dropped — SDK is not configured` warning appears otherwise), that events were recorded (debug lines), and that the circuit breaker is not open from earlier failures. |

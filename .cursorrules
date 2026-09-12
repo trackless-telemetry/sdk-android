@@ -33,4 +33,4 @@ This package is `com.tracklesstelemetry:sdk-android`, a privacy-first Android an
 - No GAID/SSAID — no permissions required
 - Sessions are managed automatically via ActivityLifecycleCallbacks
 - For Compose, use `LaunchedEffect` on `currentBackStackEntryAsState()` for view tracking
-- ProGuard/R8 rules ship with the SDK — no extra configuration needed
+- No ProGuard/R8 configuration needed — the SDK uses no reflection or runtime class lookup, so nothing needs keeping. It ships no consumer rules file because none is required

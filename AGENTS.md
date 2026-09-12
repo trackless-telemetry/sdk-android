@@ -68,7 +68,7 @@ debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
 - Sessions are managed automatically via `ActivityLifecycleCallbacks` — no manual handling.
 - For Compose view tracking, use `LaunchedEffect` on `currentBackStackEntryAsState()` (GUIDE.md).
 - All event methods are non-blocking, thread-safe, and never throw.
-- ProGuard/R8 rules ship with the SDK — no extra configuration needed.
+- No ProGuard/R8 configuration needed — the SDK uses no reflection or runtime class lookup, so nothing needs keeping. It ships no consumer rules file because none is required.
 - No persistent identifiers of any kind — never add GAID/SSAID or any device ID to any path.
 
 ## Verify
@@ -78,14 +78,14 @@ main thread** (it performs network I/O on the calling thread). Watch logcat
 (`adb logcat -s Trackless`) for `flush success — status=200` — with `configured — env=...`,
 `feature — ...`, and `flush — 1 events` confirming the earlier steps; failures log
 `flush failed/rejected — status=...`. GUIDE.md §12 carries the full recipe and §13 the
-troubleshooting decoder (401/402/429/5xx). When the first event lands, the dashboard's
-getting-started checklist marks **"See your first feature data"**.
+troubleshooting decoder (400/401/402/413/429/5xx). When the first event lands, the
+dashboard's getting-started checklist marks **"See your first feature data"**.
 
 ## After release: the loop back to you
 
 Once the instrumented app ships, production usage accumulates in Trackless as aggregate counts
-only — no individual records, no identifiers. From the dashboard's Agent context view, the
-developer can copy or download a context pack — the counts for a chosen window and slice,
+only — no individual records, no identifiers. From the dashboard's Agent pack page, the
+developer can copy or download a pack — the counts for a chosen window and slice,
 together with instructions for reading them — and paste it into the agent they already use
 (likely you). Trackless itself never calls a model and never analyzes anything; interpreting the
 counts against the codebase is the customer's agent's job. Instrument names thoughtfully now and
