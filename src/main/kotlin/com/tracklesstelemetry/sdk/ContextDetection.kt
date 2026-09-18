@@ -17,10 +17,14 @@ import java.util.Locale
  * - NO full user agent string
  * - NO screen resolution or exact screen dimensions
  * - Region derived from Locale.getDefault() only (not IP-based)
+ * - NO record about this installation or its acquisition: no first-install
+ *   time, no installer / install-source lookup. Only runtime properties the OS
+ *   exposes to every app and the app's own compiled manifest values
+ *   (versionName, versionCode, FLAG_DEBUGGABLE).
  */
 internal object ContextDetection {
 
-    private const val SDK_VERSION = "android/0.4.1"
+    private const val SDK_VERSION = "android/0.5.0"
 
     /**
      * Detect the full event context.
@@ -34,9 +38,7 @@ internal object ContextDetection {
             language = detectLanguage(),
             appVersion = detectAppVersion(context),
             buildNumber = detectBuildNumber(context),
-            daysSinceInstall = detectDaysSinceInstall(context),
             sdkVersion = SDK_VERSION,
-            distributionChannel = detectDistributionChannel(context),
         )
     }
 
@@ -144,58 +146,6 @@ internal object ContextDetection {
             }
         } catch (_: Throwable) {
             null
-        }
-    }
-
-    /**
-     * Days since first install from PackageManager.
-     *
-     * Uses firstInstallTime — a read-only system value (no disk writes).
-     */
-    private fun detectDaysSinceInstall(context: Context): Int? {
-        return try {
-            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val installTimeMs = packageInfo.firstInstallTime
-            val nowMs = System.currentTimeMillis()
-            val diffDays = ((nowMs - installTimeMs) / (1000L * 60 * 60 * 24)).toInt()
-            diffDays.coerceAtLeast(0)
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    /**
-     * Detect the app distribution source.
-     *
-     * Returns one of: "debug", "play_store", "galaxy_store", "amazon_store",
-     * "sideloaded", or "unknown".
-     *
-     * "unknown" is returned when the installer package name is null (which occurs
-     * for `adb install` and some OEM scenarios where the install source is not
-     * recorded) or when the lookup throws. A non-null installer that doesn't match
-     * a known store returns "sideloaded" — i.e., we have positive evidence of a
-     * non-store installer.
-     */
-    private fun detectDistributionChannel(context: Context): String {
-        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        if (isDebuggable) return "debug"
-
-        return try {
-            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getInstallerPackageName(context.packageName)
-            }
-            when (installer) {
-                null -> "unknown"
-                "com.android.vending" -> "play_store"
-                "com.sec.android.app.samsungapps" -> "galaxy_store"
-                "com.amazon.venezia" -> "amazon_store"
-                else -> "sideloaded"
-            }
-        } catch (_: Throwable) {
-            "unknown"
         }
     }
 }

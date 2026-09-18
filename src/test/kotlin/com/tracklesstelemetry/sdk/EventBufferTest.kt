@@ -94,9 +94,12 @@ class EventBufferTest {
     @Test
     @DisplayName("Error events aggregate by severity and code")
     fun errorEventsAggregateBySeverityAndCode() {
-        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.FATAL, code = "E001"))
-        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.FATAL, code = "E001"))
-        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.FATAL, code = "E002"))
+        // The buffer keys on whatever severity it is handed. `error()` and
+        // `info()` map before it gets here, so in practice this is `error` or
+        // `info`; the rollup key itself is severity-agnostic and tested as such.
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.ERROR, code = "E001"))
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.ERROR, code = "E001"))
+        buffer.add(TracklessEvent(type = EventType.ERROR, name = "crash", severity = ErrorSeverity.ERROR, code = "E002"))
 
         assertEquals(2, buffer.totalSize)
     }

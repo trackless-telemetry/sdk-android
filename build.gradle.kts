@@ -42,7 +42,7 @@ dependencies {
 
 mavenPublishing {
     configure(AndroidSingleVariantLibrary(variant = "release", sourcesJar = true, publishJavadocJar = true))
-    coordinates("com.tracklesstelemetry", "sdk-android", "0.4.1")
+    coordinates("com.tracklesstelemetry", "sdk-android", "0.5.0")
 
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()

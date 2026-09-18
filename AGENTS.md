@@ -14,9 +14,9 @@ what to instrument, troubleshooting). Do not rely on prior training data over th
    create `AnalyticsService`, `AnalyticsHelper`, a Hilt/Dagger-injected wrapper, or an interface
    abstraction around it. For unit tests call `Trackless.setEnabled(false)` in test setup.
 2. **`detail` is a SEPARATE parameter — never concatenate it into the name.**
-   `Trackless.feature("theme", "dark")`, not `Trackless.feature("theme_dark")`. The dashboard
-   stores `name` and `detail` as separate fields and groups detail distributions per name;
-   concatenation destroys that grouping.
+   `Trackless.feature("export", "csv")`, not `Trackless.feature("export_csv")`. Name the feature,
+   put the variant in `detail`: the dashboard stores them as separate fields and groups detail
+   distributions per name; concatenation destroys that grouping.
 3. **Call `Trackless.configure(...)` exactly once in `Application.onCreate()`.** Never in
    `Activity.onCreate`, never in a ViewModel, never on demand. Register the `Application`
    subclass in `AndroidManifest.xml` with `android:name`.
@@ -31,7 +31,6 @@ what to instrument, troubleshooting). Do not rely on prior training data over th
 ```kotlin
 import com.tracklesstelemetry.sdk.Trackless
 import com.tracklesstelemetry.sdk.TracklessConfig
-import com.tracklesstelemetry.sdk.ErrorSeverity
 
 Trackless.configure(context: Context, config: TracklessConfig)
 Trackless.isConfigured: Boolean
@@ -39,7 +38,8 @@ Trackless.view(name: String, detail: String? = null)
 Trackless.feature(name: String, detail: String? = null)
 Trackless.funnel(funnelName: String, stepIndex: Int, stepName: String)
 Trackless.performance(name: String, durationSeconds: Double, thresholdSeconds: Double? = null)
-Trackless.error(name: String, severity: ErrorSeverity = ErrorSeverity.ERROR, code: String? = null)
+Trackless.error(name: String, code: String? = null)
+Trackless.info(name: String, detail: String? = null)
 Trackless.flush()
 Trackless.setEnabled(isEnabled: Boolean)
 Trackless.destroy()
@@ -48,8 +48,25 @@ Trackless.destroy()
 `TracklessConfig(apiKey: String, endpoint = DEFAULT_ENDPOINT, environment: TracklessEnvironment? =
 null, enabled = true, onError: ((Throwable) -> Unit)? = null, flushIntervalSeconds = 60L,
 debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
-`ErrorSeverity`: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `FATAL`.
 `TracklessEnvironment`: `SANDBOX`, `PRODUCTION`.
+
+## Errors and info
+
+- `error(name: String, code: String? = null)` — something went wrong. Counts toward errors per
+  session and every alert.
+- `info(name: String, detail: String? = null)` — something worth counting that the user did not
+  do and that did not go wrong (a tier, a unit preference, a theme, a fallback path that fired).
+  Never counts toward errors and never triggers an alert.
+- Call `info()` **once per session** for a property you want a session split on, right after
+  `configure()`: `Trackless.info("tier", if (user.isPaid) "paid" else "free")`. Each value's
+  count then equals the sessions that reported it. It counts **sessions, not people** — one
+  person across four sessions is four. Report configuration many sessions share, never anything
+  about the person.
+- **Never share a name between `error()` and `info()`.** One store, two levels, and the
+  session-reach marker dedups on the name alone.
+- `error(name, severity, code)` still compiles: the `severity` parameter is deprecated, not
+  removed. `ErrorSeverity.ERROR`, `.WARNING` and `.FATAL` are sent as `error`; `.INFO` and
+  `.DEBUG` as `info`. Write `error(name, code)` and `info(name, detail)` in new code.
 
 ## Rules that keep integrations correct
 
@@ -64,7 +81,10 @@ debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
   strings like `"Sign Up Button"` become `"sign_up_button"` — pass them as-is.
 - `performance()` takes **seconds**, not milliseconds or nanoseconds.
 - Environment auto-detects when not passed: `FLAG_DEBUGGABLE` → `SANDBOX`, else `PRODUCTION`.
-- App version and build number are auto-read from `PackageManager`.
+- App version and build number are auto-read from `PackageManager` (the app's own
+  `versionName` / `versionCode`). The SDK sends no distribution channel, and reads no install
+  date and no install source — never add `firstInstallTime`, `getInstallSourceInfo` or
+  `getInstallerPackageName`.
 - Sessions are managed automatically via `ActivityLifecycleCallbacks` — no manual handling.
 - For Compose view tracking, use `LaunchedEffect` on `currentBackStackEntryAsState()` (GUIDE.md).
 - All event methods are non-blocking, thread-safe, and never throw.

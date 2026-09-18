@@ -5,6 +5,33 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-18
+
+### Added
+
+- **`Trackless.info(name: String, detail: String? = null)`** — records something worth counting that the user did not do and that did not go wrong: a tier, a unit preference, a theme, a notification permission state, a fallback path that fired. It is sugar over the existing error path — same normalization, PII guard, session-reach marker, session-depth increment and client-side rollup — sent with severity `info` and the detail in `code`. An info event never counts toward errors per session and never triggers an alert. Called once per session, each value's count equals the number of sessions that reported it; it counts sessions, not people.
+- **`Trackless.error(name: String, code: String? = null)`** — the documented error signature, as a new two-argument overload. `Trackless.error("api_timeout", "TIMEOUT_500")` reads the way it looks. The severity-taking overload lost its default on `severity`, so a one-argument `error(name)` call resolves to the new overload with identical behavior.
+
+### Changed
+
+- **Two stored levels.** The SDK maps whatever severity a caller passes to one of two values before the event is buffered: `ErrorSeverity.ERROR`, `.WARNING` and `.FATAL` are sent as `error`; `.INFO` and `.DEBUG` are sent as `info`. Nothing downstream ever read `fatal` or `warning` differently from `error`, and `fatal` promised what no SDK delivers — none captures crashes. The ingest endpoint applies the same mapping, so an older SDK build is handled identically. One consequence to expect: a name previously reported at several severities in one flush window now rolls up into a single buffered entry instead of one per level.
+- **The `severity:` parameter on `error()` is deprecated** — the severity-taking overload carries `@Deprecated` pointing at `error(name, code)` and `info(name, detail)`. It still compiles and still records, so no published call breaks. `ErrorSeverity` stays public, with `DEBUG`, `WARNING` and `FATAL` individually deprecated; `ERROR` and `INFO` are not, because they are the two levels the wire carries — and the only way to pass either to `error()` is through the deprecated parameter, so a caller gets a warning either way.
+
+### Removed
+
+- **Every install-metadata read.** The SDK now stores nothing on the device and reads nothing stored there: it uses only runtime properties the OS exposes to every app (OS version, device class, locale, language) and constants compiled into the app itself (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). Concretely:
+  - **`daysSinceInstall` is no longer sent.** The SDK no longer reads `PackageInfo.firstInstallTime`. Ingest accepts and discards the field from older SDK builds.
+  - **`distributionChannel` is no longer sent.** The SDK no longer calls `PackageManager.getInstallSourceInfo` or `getInstallerPackageName`, and without the install source the only thing left to report was `FLAG_DEBUGGABLE`, which `environment` already carries. Ingest accepts and discards the field from older SDK builds.
+  - README.md, GUIDE.md, AGENTS.md and .cursorrules now say so.
+
+### Documentation
+
+- **The Play Data Safety label for `error()` / `info()` is corrected to App info and performance — Diagnostics.** It previously said Crash logs, which Play defines as crash counts and stack traces. The SDK captures neither — `error()` is a method your code calls. **If you declared Crash logs on the strength of the old guidance, update it in the Play Console.**
+- The five-level severity table is gone from README.md, GUIDE.md, AGENTS.md and .cursorrules, replaced by the two methods and a migration note carrying the mapping. New guidance: do not share a name between `error()` and `info()` — they share one store and one session-reach marker.
+- The feature example leads with `feature("export", "csv")` rather than `feature("export_clicked")`: name the feature, put the variant in `detail`. Names are permanent once data exists.
+- Session depth has one definition everywhere — **events per session**, incremented by every non-session event including `info()`.
+- The Play Console data-safety guidance now reads "error and info events (name, level, code)".
+
 ## [0.4.1] - 2026-08-26
 
 ### Added

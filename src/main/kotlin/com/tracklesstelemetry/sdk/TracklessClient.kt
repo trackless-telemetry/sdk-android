@@ -28,8 +28,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *     )
  * )
  *
- * Trackless.feature("export_clicked")
  * Trackless.view("home")
+ * Trackless.feature("export", "csv")
+ * Trackless.error("api_timeout", "TIMEOUT_500")
+ * Trackless.info("tier", "paid")
  * ```
  *
  * Privacy invariants:
@@ -243,25 +245,73 @@ object Trackless {
     }
 
     /**
-     * Record an error event.
+     * Record an error event — something went wrong.
+     *
+     * Counts toward errors per session and toward every alert.
+     *
+     * @param name Stable error name, e.g. `"api_timeout"`
+     * @param code Optional error code, e.g. an HTTP status or exception type
+     */
+    fun error(name: String, code: String? = null) {
+        recordErrorEvent(name, ErrorSeverity.ERROR, code)
+    }
+
+    /**
+     * Record an error event with an explicit severity.
+     */
+    @Deprecated(
+        "The severity parameter is deprecated. Call error(name, code) for something that went " +
+            "wrong and info(name, detail) for something that did not. `info` and `debug` are " +
+            "sent as `info`; every other value is sent as `error`.",
+    )
+    fun error(name: String, severity: ErrorSeverity, code: String? = null) {
+        recordErrorEvent(name, severity, code)
+    }
+
+    /**
+     * Record an info event — something worth counting that the user did not do
+     * and that did not go wrong.
+     *
+     * Counted separately from errors: an info event never contributes to errors
+     * per session and never triggers an alert. Report configuration many
+     * sessions share (a tier, a unit preference, a fallback path that fired),
+     * never anything about the person. Do not share a name between [error] and
+     * [info].
+     *
+     * @param name Stable name for the thing being counted, e.g. `"tier"`
+     * @param detail Optional value from a closed set, e.g. `"paid"`
+     */
+    fun info(name: String, detail: String? = null) {
+        recordErrorEvent(name, ErrorSeverity.INFO, detail)
+    }
+
+    /**
+     * Shared path behind [error] and [info].
+     *
+     * The severity is mapped to one of the two stored levels here — the single
+     * choke point — so the buffer's rollup key collapses one name reported at
+     * several legacy severities into a single entry, and nothing but `error` or
+     * `info` ever reaches the wire.
      *
      * The name is normalized in-method (mirroring [feature]) so the
      * first-occurrence dedup keys on the normalized name: the first occurrence
-     * of each error name in a session is marked with `firstOccurrences = 1`
-     * (feeding server-side session reach), and later occurrences of the same
-     * name — including different `severity` or `code` variants — omit the field.
-     * The dedup set survives buffer flushes and resets at session end.
+     * of each name in a session is marked with `firstOccurrences = 1` (feeding
+     * server-side session reach), and later occurrences of the same name —
+     * including different `code` variants — omit the field. [error] and [info]
+     * share that set, which is why a name must not be shared between them. The
+     * set survives buffer flushes and resets at session end.
      */
-    fun error(name: String, severity: ErrorSeverity = ErrorSeverity.ERROR, code: String? = null) {
+    private fun recordErrorEvent(name: String, severity: ErrorSeverity, code: String?) {
         if (!canRecord()) return
         val normalizedName = normalizeName(name) ?: return
+        val stored = storedSeverity(severity)
         val normalizedCode = code?.takeIf { it.isNotEmpty() }?.let { FeatureValidator.normalize(it) }
         val isFirstOccurrence = errorTracker.firstOccurrence(normalizedName)
         addToBuffer(
             TracklessEvent(
                 type = EventType.ERROR,
                 name = normalizedName,
-                severity = severity,
+                severity = stored,
                 code = normalizedCode,
                 firstOccurrences = if (isFirstOccurrence) 1 else null,
             )
@@ -270,8 +320,19 @@ object Trackless {
             performFlush()
         }
         sessionManager.recordActivity()
-        debug("error — $normalizedName severity=${severity.value}${if (normalizedCode != null) " code=$normalizedCode" else ""}")
+        debug("${stored.value} — $normalizedName${if (normalizedCode != null) " code=$normalizedCode" else ""}")
     }
+
+    /**
+     * Map a severity a caller passed to the one that goes on the wire.
+     *
+     * Mirrors `storedSeverity()` in `@trackless/shared-config`, which ingest
+     * applies on the write path — the SDK has no dependencies, so the rule
+     * lives twice on purpose. Matching on [ErrorSeverity.value] rather than the
+     * entries keeps the SDK's own code clear of the deprecated ones.
+     */
+    internal fun storedSeverity(sent: ErrorSeverity): ErrorSeverity =
+        if (sent.value == "info" || sent.value == "debug") ErrorSeverity.INFO else ErrorSeverity.ERROR
 
     // ─── Control Methods ─────────────────────────────────────────────────────
 

@@ -16,13 +16,34 @@ internal enum class EventType(val value: String) {
 }
 
 /**
- * Error severity levels.
+ * Severity values for the deprecated `severity` parameter on
+ * [Trackless.error].
+ *
+ * The SDK sends two of them — [ERROR] and [INFO] — and the ingest endpoint
+ * stores two. The other three are accepted for already-installed apps and
+ * mapped before the event is buffered: [DEBUG] becomes [INFO], [WARNING] and
+ * [FATAL] become [ERROR].
+ *
+ * [DEBUG], [WARNING] and [FATAL] are deprecated because nothing reads them.
+ * [INFO] and [ERROR] are not, because they are the two levels the wire carries
+ * and the SDK constructs them itself — but the only way to pass either to
+ * `error()` is through its deprecated `severity` parameter, so a caller who
+ * does gets a warning either way.
  */
 enum class ErrorSeverity(val value: String) {
+    @Deprecated("Nothing reads `debug` — it is sent as `info`. Call Trackless.info(name, detail) instead.")
     DEBUG("debug"),
+
+    /** The level [Trackless.info] sends. Call that rather than passing this to [Trackless.error]. */
     INFO("info"),
+
+    @Deprecated("Nothing reads `warning` — it is sent as `error`. Call Trackless.error(name, code) instead.")
     WARNING("warning"),
+
+    /** The level [Trackless.error] sends. */
     ERROR("error"),
+
+    @Deprecated("Nothing reads `fatal` — it is sent as `error`, and no SDK captures crashes. Call Trackless.error(name, code) instead.")
     FATAL("fatal");
 }
 
@@ -46,9 +67,7 @@ internal data class EventContext(
     val language: String? = null,
     val appVersion: String? = null,
     val buildNumber: String? = null,
-    val daysSinceInstall: Int? = null,
     val sdkVersion: String? = null,
-    val distributionChannel: String? = null,
 ) {
     fun toJson(): JSONObject {
         val json = JSONObject()
@@ -59,9 +78,7 @@ internal data class EventContext(
         if (language != null) json.put("language", language)
         if (appVersion != null) json.put("appVersion", appVersion)
         if (buildNumber != null) json.put("buildNumber", buildNumber)
-        if (daysSinceInstall != null) json.put("daysSinceInstall", daysSinceInstall)
         if (sdkVersion != null) json.put("sdkVersion", sdkVersion)
-        if (distributionChannel != null) json.put("distributionChannel", distributionChannel)
         return json
     }
 }

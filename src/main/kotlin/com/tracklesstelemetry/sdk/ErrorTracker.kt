@@ -1,18 +1,20 @@
 package com.tracklesstelemetry.sdk
 
 /**
- * In-memory error first-occurrence deduplication per session.
+ * In-memory first-occurrence deduplication per session, for error and info
+ * events.
  *
- * Tracks which normalized error names have already occurred in the current
- * session so the first occurrence of each name can be marked with
- * `firstOccurrences = 1`, feeding server-side session-reach analytics (the
- * share of sessions that hit an error at least once). Subsequent occurrences
- * of the same name within the session are not marked.
+ * Tracks which normalized names have already occurred in the current session so
+ * the first occurrence of each name can be marked with `firstOccurrences = 1`,
+ * feeding server-side session-reach analytics (the share of sessions that
+ * reported a name at least once). Subsequent occurrences of the same name
+ * within the session are not marked.
  *
- * Dedup is keyed on the normalized error `name` only (not `severity` or
- * `code`), so a session that reports one error at several severities or with
- * several codes contributes exactly one first occurrence — matching the reach
- * metric's per-name semantics and mirroring [FeatureTracker].
+ * Dedup is keyed on the normalized `name` only (not `severity` or `code`), so a
+ * session that reports one name with several codes contributes exactly one first
+ * occurrence — matching the reach metric's per-name semantics and mirroring
+ * [FeatureTracker]. `error()` and `info()` share this set, which is why a name
+ * must not be shared between them.
  *
  * The set lives in session state (not the event buffer): it must survive buffer
  * flushes and reset only at session end. Cleared exactly where [FeatureTracker]

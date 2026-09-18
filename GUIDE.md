@@ -21,9 +21,9 @@ These are the mistakes AI assistants most often make when integrating Trackless.
 @Composable
 fun SettingsScreen() {
     Button(onClick = {
-        Trackless.feature("export_clicked")
-        exportData()
-    }) { Text("Export") }
+        Trackless.feature("export", "csv")
+        exportCsv()
+    }) { Text("Export CSV") }
 }
 
 // WRONG — do not create this
@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.4.1")
+    implementation("com.tracklesstelemetry:sdk-android:0.5.0")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.4.1'
+    implementation 'com.tracklesstelemetry:sdk-android:0.5.0'
 }
 ```
 
@@ -233,12 +233,14 @@ class ProfileFragment : Fragment() {
 Record when a user interacts with a feature, with an optional detail:
 
 ```kotlin
-Trackless.feature("export_clicked")
+// Name the feature, put the variant in detail
+Trackless.feature("export", "csv")
+Trackless.feature("export", "pdf")
+Trackless.feature("share", "message")
+
+// No variant to record? detail is optional
 Trackless.feature("dark_mode_toggled")
 Trackless.feature("photo-upload")
-Trackless.feature("settings", "notifications")  // with detail
-Trackless.feature("export", "csv")               // with detail
-Trackless.feature("theme", "dark")               // with detail
 ```
 
 **When to use:** Button clicks, toggle switches, menu selections, user-initiated actions.
@@ -331,33 +333,64 @@ Trackless.performance(
 
 ### Errors
 
-Record application errors with severity and optional code:
+Record something that went wrong, with an optional code:
 
 ```kotlin
 // Basic error
-Trackless.error("payment_failed", severity = ErrorSeverity.ERROR)
+Trackless.error("payment_failed")
 
-// With error code
-Trackless.error("api_timeout", severity = ErrorSeverity.WARNING, code = "ETIMEDOUT")
-Trackless.error("validation_failed", severity = ErrorSeverity.INFO, code = "INVALID_EMAIL")
+// With error code — an HTTP status, an exception type, a backend error code
+Trackless.error("api_timeout", "ETIMEDOUT")
+Trackless.error("validation_failed", "INVALID_EMAIL")
 
 // In a catch block
 try {
     submitOrder()
 } catch (e: Exception) {
-    Trackless.error(
-        "order_submission",
-        severity = ErrorSeverity.ERROR,
-        code = e.javaClass.simpleName
-    )
+    Trackless.error("order_submission", e.javaClass.simpleName)
 }
 ```
 
-**Severity levels:** `ErrorSeverity.DEBUG`, `.INFO`, `.WARNING`, `.ERROR`, `.FATAL`
+**When to use:** Caught exceptions, failed network requests, validation errors — any error you want to trend over time. Every `error()` call counts toward errors per session and toward every alert.
 
-**When to use:** Caught exceptions, failed network requests, validation errors, any error you want to trend over time.
+**Session reach (automatic):** The first occurrence of each name within a session is automatically flagged (as an aggregate first-occurrence count) so the dashboard can report **session reach** — the share of sessions that reported it at least once, as distinct from the raw volume a single looping session can inflate. This is fully automatic; call `error(...)` exactly as shown. Names are normalized before the check, so `Trackless.error("Payment Failed")` and `Trackless.error("payment_failed")` count as the same error, and repeated occurrences within a session — including different `code` values — count once toward reach. The tracking is in-memory only and resets when the session ends, consistent with the no-cross-session-linking guarantee.
 
-**Session reach (automatic):** The first occurrence of each error name within a session is automatically flagged (as an aggregate first-occurrence count) so the dashboard can report **session reach** — the share of sessions that hit an error at least once, as distinct from the raw error volume a single looping session can inflate. This is fully automatic; call `error(...)` exactly as shown. Names are normalized before the check, so `Trackless.error("Payment Failed")` and `Trackless.error("payment_failed")` count as the same error, and repeated occurrences within a session — including different `severity` or `code` values — count once toward reach. The tracking is in-memory only and resets when the session ends, consistent with the no-cross-session-linking guarantee.
+### Info
+
+Record something worth counting that the user did not do and that did not go wrong:
+
+```kotlin
+// Configuration this session is running under
+Trackless.info("tier", if (user.isPaid) "paid" else "free")
+Trackless.info("units", settings.units)   // "metric" | "imperial"
+
+// A path that fired without anything failing
+Trackless.info("offline_fallback")
+```
+
+An `info()` event never counts toward errors per session and never triggers an alert. It is the right home for a tier, a unit preference, a theme, a notification permission state, or a fallback path that fired — anything that would otherwise be filed under a feature the user never used, or an error that was not an error.
+
+**Call it once per session** for a property you want a session split on — right after `configure()` in `Application.onCreate()`, or the first time the value is known:
+
+```kotlin
+Trackless.configure(context = this, config = TracklessConfig(apiKey = BuildConfig.TRACKLESS_API_KEY))
+Trackless.info("tier", if (user.isPaid) "paid" else "free")
+```
+
+Each value's count then equals the number of sessions that reported it — 3,100 sessions on `free`, 420 on `paid`. **It counts sessions, not people.** One person across four sessions is four. Report configuration many sessions share, never anything about the person.
+
+**Do not share a name between `error(name, code)` and `info(name, detail)`.** They are stored in one place, distinguished only by level, and the session-reach marker dedups on the name alone — so a name used by both methods in one session is marked once and reads as two unrelated rows.
+
+#### Migrating from the `severity` parameter
+
+`error(name, severity, code)` still compiles and still records — the parameter is deprecated, not removed, so no published call breaks. The SDK maps what you pass to one of two stored levels before the event is buffered:
+
+| Passed to `error()`                                    | Sent and stored as |
+| ------------------------------------------------------ | ------------------ |
+| `ErrorSeverity.ERROR`, `.WARNING`, `.FATAL`            | `error`            |
+| `ErrorSeverity.INFO`, `.DEBUG`                         | `info`             |
+
+Replace `error(name, ErrorSeverity.WARNING, code)` with `error(name, code)`, and `error(name, ErrorSeverity.INFO, value)` with `info(name, value)`. `DEBUG`, `WARNING` and `FATAL` carry `@Deprecated`, so the Kotlin compiler points at every remaining call site.
 
 ## 4. Event Naming Rules
 
@@ -425,9 +458,8 @@ Sessions are managed automatically via `ActivityLifecycleCallbacks`. No code nee
 
 - **Start:** A session begins when `Trackless.configure()` is called, and a new session starts each time the app returns to the foreground
 - **End:** A session ends when all Activities leave the foreground — the session-end event (with duration and depth) is flushed immediately
-- **Depth:** Every non-session event increments the session's depth counter
+- **Depth:** Session depth is **events per session**. Every non-session event increments it — views, features, funnel steps, performance measurements, errors and `info()` calls alike
 - **Duration:** Measured from session start to session end
-- **Context:** `daysSinceInstall` is computed from `PackageManager.firstInstallTime`
 
 ## 6. Flush Behavior
 
@@ -527,8 +559,7 @@ fun SearchScreen() {
                         durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0
                     )
                 } catch (e: Exception) {
-                    Trackless.error("search_failed", severity = ErrorSeverity.ERROR,
-                        code = e.javaClass.simpleName)
+                    Trackless.error("search_failed", e.javaClass.simpleName)
                 }
             }
         }) {
@@ -575,8 +606,7 @@ fun CheckoutScreen(navController: NavController) {
                         Trackless.funnel("checkout", 3, "order_complete")
                         step = CheckoutStep.CONFIRMATION
                     } catch (e: Exception) {
-                        Trackless.error("order_failed", severity = ErrorSeverity.ERROR,
-                            code = e.javaClass.simpleName)
+                        Trackless.error("order_failed", e.javaClass.simpleName)
                     }
                 }
             })
@@ -633,14 +663,17 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **No device serial number, IMEI, or hardware identifiers**
 - **No IP address processing by application code** — IP addresses are never read, parsed, stored, or used by the SDK or the Trackless backend. Region comes from system locale, not IP geolocation. (AWS infrastructure receives IP addresses for network routing and DDoS protection as part of standard cloud operations, but they are not used for analytics.)
 - **No persistent storage** — no SharedPreferences, files, databases, or any local persistence
+- **Nothing about this installation** — no install date, no install source. The SDK stores nothing on the device and reads nothing stored there
 - **No cross-session linking** — session state is in-memory only
 - **No data sent to third parties** — events go only to your configured endpoint
-- **No stack traces, crash logs, or error messages** — error tracking uses only developer-defined names, severity levels, and codes
+- **No stack traces, crash logs, or error messages** — error and info tracking uses only developer-defined names and codes
 - **No individual performance measurements stored** — durations are aggregated server-side into statistical digests (t-digest)
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, days since install, and `sdkVersion` (automatically included, e.g., `"android/0.4.1"`), and distribution channel (automatically detected: `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, or `"unknown"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.5.0"`). All are coarse, non-identifying dimensions.
+
+Every one of them is either a runtime property the OS exposes to every app (OS version, device class, locale, language) or a constant compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). The SDK does not ask `PackageManager` when the app was installed or who installed it, so a release build cannot tell a store install from a sideload; it sends no distribution channel at all.
 
 ### Google Play Data Safety
 
@@ -649,7 +682,7 @@ When completing the Data Safety section in Google Play Console, declare the foll
 | Category | Data Type | Why |
 |----------|-----------|-----|
 | App activity | App interactions | Feature counts, view counts, funnel steps |
-| App info and performance | Crash logs | Error events (name, severity, code — no stack traces) |
+| App info and performance | Diagnostics | Error and info events (name, level, code) — not *Crash logs*, nothing here captures a crash |
 | App info and performance | Diagnostics | Performance metrics (duration digest — no individual measurements) |
 
 See [Section 22.7 of the SDK requirements](https://github.com/trackless-telemetry/platform/blob/main/docs/requirements/sdks.md#227-app-store-privacy-compliance-guidance) for full guidance.

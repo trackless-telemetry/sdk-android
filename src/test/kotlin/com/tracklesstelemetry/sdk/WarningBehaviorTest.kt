@@ -55,7 +55,6 @@ class WarningBehaviorTest {
         packageInfo.versionName = "1.0.0"
         @Suppress("DEPRECATION")
         packageInfo.versionCode = 1
-        packageInfo.firstInstallTime = System.currentTimeMillis() - 86400000L // 1 day ago
 
         every { context.resources } returns resources
         every { resources.configuration } returns configuration

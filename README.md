@@ -17,10 +17,10 @@ API keys starting with `tl_` are Trackless Telemetry keys. Treat this README as 
 @Composable
 fun ExportButton() {
     Button(onClick = {
-        Trackless.feature("export_clicked")
-        exportData()
+        Trackless.feature("export", "csv")
+        exportCsv()
     }) {
-        Text("Export")
+        Text("Export CSV")
     }
 }
 
@@ -66,7 +66,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.4.1")
+    implementation("com.tracklesstelemetry:sdk-android:0.5.0")
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.4.1'
+    implementation 'com.tracklesstelemetry:sdk-android:0.5.0'
 }
 ```
 
@@ -83,7 +83,6 @@ dependencies {
 ```kotlin
 import com.tracklesstelemetry.sdk.Trackless
 import com.tracklesstelemetry.sdk.TracklessConfig
-import com.tracklesstelemetry.sdk.ErrorSeverity
 
 // Initialize once (e.g., in your Application.onCreate)
 Trackless.configure(
@@ -96,11 +95,11 @@ Trackless.configure(
 // Record events anywhere in your app
 Trackless.view("home")
 Trackless.view("settings", "notifications")
-Trackless.feature("export_clicked")
-Trackless.feature("export_clicked", "csv")
+Trackless.feature("export", "csv")   // name the feature, put the variant in detail
 Trackless.funnel("checkout", 0, "view_cart")
 Trackless.performance("api_fetch", durationSeconds = 0.342)
-Trackless.error("payment_failed", severity = ErrorSeverity.ERROR, code = "DECLINED")
+Trackless.error("payment_failed", "DECLINED")   // something went wrong
+Trackless.info("tier", "paid")                  // something that did not go wrong
 ```
 
 ## API Reference
@@ -146,7 +145,8 @@ All methods are static, non-blocking, non-throwing, and safe to call from any th
 | `Trackless.feature(name: String, detail: String? = null)`                               | Feature interaction (optional detail) |
 | `Trackless.funnel(funnelName: String, stepIndex: Int, stepName: String)`                 | Funnel step progression             |
 | `Trackless.performance(name: String, durationSeconds: Double, thresholdSeconds: Double?)` | Timing measurement (seconds)        |
-| `Trackless.error(name: String, severity: ErrorSeverity, code: String?)`                  | Application error                   |
+| `Trackless.error(name: String, code: String?)`                                           | Something went wrong — counts toward errors per session and every alert |
+| `Trackless.info(name: String, detail: String?)`                                          | Something worth counting that the user did not do and that did not go wrong — never counts toward errors or alerts |
 
 ### Control Methods
 
@@ -159,6 +159,29 @@ Trackless.setEnabled(true)     // Resume recording
 Trackless.flush()              // Force-send buffered events
 Trackless.destroy()            // Flush and permanently disable
 ```
+
+## Errors and Info — Two Levels
+
+`error(name, code)` is for something that went wrong. It counts toward errors per session and toward every alert.
+
+`info(name, detail)` is for something worth counting that the user did not do and that did not go wrong — a tier, a unit preference, a theme, a fallback path that fired. It never counts toward errors and never triggers an alert.
+
+```kotlin
+Trackless.error("api_timeout", "TIMEOUT_500")
+Trackless.info("offline_fallback")
+```
+
+**Once per session** gives you a session split on a property. Call it right after `configure()`:
+
+```kotlin
+Trackless.info("tier", if (user.isPaid) "paid" else "free")
+```
+
+Each value's count then equals the number of sessions that reported it — 3,100 on `free`, 420 on `paid`. It counts sessions, not people: one person across four sessions is four. Report configuration many sessions share, never anything about the person.
+
+**Do not share a name between `error()` and `info()`.** They are stored in one place, distinguished only by level, and the session-reach marker dedups on the name alone.
+
+**Migrating from `severity`.** `error(name, severity, code)` still compiles and still records — the parameter is deprecated, not removed. The SDK maps `ErrorSeverity.ERROR`, `.WARNING` and `.FATAL` to `error`, and `.INFO` and `.DEBUG` to `info`, before the event is buffered. Replace `error(name, ErrorSeverity.WARNING, code)` with `error(name, code)`, and `error(name, ErrorSeverity.INFO, value)` with `info(name, value)`.
 
 ## Event Naming Rules
 
@@ -191,11 +214,11 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 | `deviceClass`     | `"phone"`, `"tablet"` | `Configuration.screenLayout`     |
 | `region`          | `"US"`          | `Locale.getDefault()` (country)  |
 | `language`        | `"en"`          | `Locale.getDefault()` (language) |
-| `appVersion`      | `"2.1.0"`       | `PackageManager`                 |
-| `buildNumber`     | `"142"`         | `PackageManager`                 |
-| `daysSinceInstall` | `45`            | `PackageManager.firstInstallTime` |
-| `sdkVersion`      | `"android/0.4.1"` | SDK platform and version identifier |
-| `distributionChannel` | `"play_store"`, `"galaxy_store"`, `"amazon_store"`, `"sideloaded"`, `"debug"`, `"unknown"` | `PackageManager` installer + build config |
+| `appVersion`      | `"2.1.0"`       | `PackageManager` (your app's own `versionName`) |
+| `buildNumber`     | `"142"`         | `PackageManager` (your app's own `versionCode`) |
+| `sdkVersion`      | `"android/0.5.0"` | SDK platform and version identifier |
+
+**The SDK stores nothing on the device and reads nothing stored there.** It uses only runtime properties the OS exposes to every app (OS version, device class, locale, language) and constants compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). It does not ask `PackageManager` when the app was installed or who installed it. `FLAG_DEBUGGABLE` decides only `environment`.
 
 ## What Trackless Does NOT Collect
 
@@ -203,9 +226,10 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 - No IMEI, serial number, or hardware identifiers
 - No IP-based geolocation (region comes from system locale settings)
 - No persistent storage (no SharedPreferences, files, databases, or any local persistence)
+- No install date or install source — nothing `PackageManager` keeps about this installation
 - No cross-session linking of any kind
 - No data sent to third parties
-- No stack traces, crash logs, or error messages — error tracking uses only developer-defined names, severity levels, and codes
+- No stack traces, crash logs, or error messages — error and info tracking uses only developer-defined names and codes
 - No individual performance measurements stored — durations are aggregated into statistical digests
 - PII auto-stripping of email addresses, phone numbers, and SSN patterns from all event fields
 - No Android permissions required
@@ -217,7 +241,7 @@ When completing the Data Safety section in Google Play Console, declare the foll
 | Category                       | Data Type        | Why                                                                  |
 | ------------------------------ | ---------------- | -------------------------------------------------------------------- |
 | App activity                   | App interactions | Feature counts, view counts, funnel steps                            |
-| App info and performance       | Crash logs       | Error events (name, severity, code — no stack traces)                |
+| App info and performance       | Diagnostics      | Error and info events (name, level, code) — not *Crash logs*          |
 | App info and performance       | Diagnostics      | Performance metrics (duration digest — no individual measurements)   |
 
 ## License

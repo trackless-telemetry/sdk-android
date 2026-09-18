@@ -53,7 +53,6 @@ class TracklessClientTest {
         packageInfo.versionName = "1.0.0"
         @Suppress("DEPRECATION")
         packageInfo.versionCode = 1
-        packageInfo.firstInstallTime = System.currentTimeMillis() - 86400000L // 1 day ago
 
         every { context.resources } returns resources
         every { resources.configuration } returns configuration
@@ -395,19 +394,19 @@ class TracklessClientTest {
     }
 
     @Test
-    @DisplayName("Error events include severity and code")
+    @DisplayName("Error events include the stored severity and code")
     fun errorEventsIncludeSeverityAndCode() {
         val payloadSlot = slot<EventPayload>()
         every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
 
         configure()
-        Trackless.error("crash", ErrorSeverity.FATAL, "E001")
+        Trackless.error("crash", "E001")
         Trackless.flush()
 
         assertTrue(payloadSlot.isCaptured)
         val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
         assertEquals(1, errorEvents.size)
-        assertEquals(ErrorSeverity.FATAL, errorEvents[0].severity)
+        assertEquals(ErrorSeverity.ERROR, errorEvents[0].severity)
         assertEquals("e001", errorEvents[0].code)
     }
 
@@ -766,6 +765,7 @@ class TracklessClientTest {
 
     @Test
     @DisplayName("Severity and code variants of one name share a single first occurrence")
+    @Suppress("DEPRECATION") // exercises the legacy severity parameter on purpose
     fun severityAndCodeVariantsShareOneFirstOccurrence() {
         val payloadSlot = slot<EventPayload>()
         every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
@@ -776,9 +776,11 @@ class TracklessClientTest {
         Trackless.error("payment_failed", ErrorSeverity.FATAL)
         Trackless.flush()
 
-        // Three distinct rollup keys (severity/code differ), one first occurrence total.
+        // Every severity now stores as `error`, so the keys differ only by code:
+        // three distinct rollup keys, one first occurrence total.
         val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
         assertEquals(3, errorEvents.size)
+        assertTrue(errorEvents.all { it.severity == ErrorSeverity.ERROR })
         assertEquals(1, errorEvents.sumOf { it.firstOccurrences ?: 0 })
     }
 

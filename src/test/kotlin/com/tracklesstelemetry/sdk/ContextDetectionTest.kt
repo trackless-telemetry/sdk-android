@@ -8,7 +8,9 @@ import android.content.res.Configuration
 import android.content.res.Resources
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeEach
@@ -41,7 +43,6 @@ class ContextDetectionTest {
         packageInfo.versionName = "2.1.0"
         @Suppress("DEPRECATION")
         packageInfo.versionCode = 42
-        packageInfo.firstInstallTime = System.currentTimeMillis() - 3 * 86400000L // 3 days ago
 
         every { context.resources } returns resources
         every { resources.configuration } returns configuration
@@ -186,13 +187,39 @@ class ContextDetectionTest {
         assertEquals("42", ctx.buildNumber)
     }
 
+    // The SDK reads nothing PackageManager keeps about this installation. SDK
+    // versions before 0.5.0 read firstInstallTime (sent as daysSinceInstall) and
+    // the installer package (mapped to a store name and sent as
+    // distributionChannel). If either comes back, these fail.
+
     @Test
-    @DisplayName("Days since install is detected")
-    fun daysSinceInstallDetected() {
+    @DisplayName("Serialized context carries no daysSinceInstall or distributionChannel")
+    fun contextJsonHasNoInstallAgeOrChannel() {
+        packageInfo.firstInstallTime = System.currentTimeMillis() - 3 * 86400000L
         configuration.screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL
-        val ctx = ContextDetection.detect(context)
-        assertNotNull(ctx.daysSinceInstall)
-        assertEquals(3, ctx.daysSinceInstall)
+        for (flags in listOf(0, ApplicationInfo.FLAG_DEBUGGABLE)) {
+            appInfo.flags = flags
+            val json = ContextDetection.detect(context).toJson()
+            assertFalse(json.has("daysSinceInstall"))
+            assertFalse(json.has("distributionChannel"))
+            val allowed = setOf(
+                "platform", "osVersion", "deviceClass", "region", "language",
+                "appVersion", "buildNumber", "sdkVersion",
+            )
+            json.keys().forEach { key -> assert(key in allowed) { "unexpected context key: $key" } }
+        }
+    }
+
+    @Test
+    @DisplayName("The installer / install source is never looked up")
+    fun installSourceNeverLookedUp() {
+        appInfo.flags = 0
+        configuration.screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL
+        ContextDetection.detect(context)
+        ContextDetection.detectEnvironment(context)
+        verify(exactly = 0) { packageManager.getInstallSourceInfo(any()) }
+        @Suppress("DEPRECATION")
+        verify(exactly = 0) { packageManager.getInstallerPackageName(any()) }
     }
 
     @Test
