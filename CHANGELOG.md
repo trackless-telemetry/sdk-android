@@ -5,6 +5,14 @@ All notable changes to the Trackless Telemetry Android SDK will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-14
+
+### Fixed
+
+- **A second `configure()` with different settings is no longer silently ignored.** It used to return at once, so an app that re-keys at runtime (a user joining, switching or leaving an organization) kept sending under the first key, in the same session, with nothing logged. Now it ends the current session, sends that session's buffered events under the previous key, and starts a new session under the new one. A repeat call with identical settings keeps the current session and only replaces `onError`, so a stray second call costs nothing. Calling `destroy()` before `configure()` still works but is no longer needed.
+- **No network send runs on the caller's thread.** `flush()`, `destroy()` and the automatic flush at 100 buffered items used to send on whichever thread called them. From the main thread Android throws `NetworkOnMainThreadException`, which the SDK swallowed: the batch was lost, `flush failed — network error` was logged, and the circuit breaker opened. All three now hand the send to the SDK's flush thread and return at once. `destroy()` lets that thread finish its final send before it stops.
+- **Re-enabling recording starts a proper session.** `setEnabled(false)` drops the session unsent, but `setEnabled(true)` reopened one without recording its start, so the later session end had no matching start. It now starts a new session with its start event.
+
 ## [0.5.0] - 2026-09-18
 
 ### Added

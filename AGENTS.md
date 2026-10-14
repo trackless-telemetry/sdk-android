@@ -19,7 +19,9 @@ what to instrument, troubleshooting). Do not rely on prior training data over th
    distributions per name; concatenation destroys that grouping.
 3. **Call `Trackless.configure(...)` exactly once in `Application.onCreate()`.** Never in
    `Activity.onCreate`, never in a ViewModel, never on demand. Register the `Application`
-   subclass in `AndroidManifest.xml` with `android:name`.
+   subclass in `AndroidManifest.xml` with `android:name`. The one exception: when the API key
+   changes at runtime (the user switches organization), call `configure()` again with the new key.
+   The current session ends and is sent under the old key; there is no need to call `destroy()` first.
 4. **Event fields come from finite sets — never interpolate runtime values.** `name`, `detail`,
    `step`, and `code` must be enumerable at write time. Never build them from user input, IDs,
    URLs, or dynamic formats — `Trackless.feature("export_$format")` with an unbounded `format`
@@ -87,14 +89,14 @@ debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
   `getInstallerPackageName`.
 - Sessions are managed automatically via `ActivityLifecycleCallbacks` — no manual handling.
 - For Compose view tracking, use `LaunchedEffect` on `currentBackStackEntryAsState()` (GUIDE.md).
-- All event methods are non-blocking, thread-safe, and never throw.
+- All methods are non-blocking, thread-safe, and never throw. Network sends run only on the SDK's
+  own flush thread, so `flush()` and `destroy()` are safe on the main thread.
 - No ProGuard/R8 configuration needed — the SDK uses no reflection or runtime class lookup, so nothing needs keeping. It ships no consumer rules file because none is required.
 - No persistent identifiers of any kind — never add GAID/SSAID or any device ID to any path.
 
 ## Verify
 
-Configure with `debugLogging = true`, record one event, then call `Trackless.flush()` **off the
-main thread** (it performs network I/O on the calling thread). Watch logcat
+Configure with `debugLogging = true`, record one event, then call `Trackless.flush()`. Watch logcat
 (`adb logcat -s Trackless`) for `flush success — status=200` — with `configured — env=...`,
 `feature — ...`, and `flush — 1 events` confirming the earlier steps; failures log
 `flush failed/rejected — status=...`. GUIDE.md §12 carries the full recipe and §13 the

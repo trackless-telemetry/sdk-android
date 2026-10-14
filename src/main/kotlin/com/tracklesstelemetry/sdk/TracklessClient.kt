@@ -5,6 +5,8 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -53,6 +55,9 @@ object Trackless {
     /** One-shot flag: warn at most once when events are recorded while unconfigured. */
     private val preConfigureWarned = AtomicBoolean(false)
 
+    /** Set while a threshold flush is queued, so a burst of events queues only one. */
+    private val thresholdFlushQueued = AtomicBoolean(false)
+
     private var apiKey: String = ""
     private var endpoint: String = ""
     private var environment: TracklessEnvironment = TracklessEnvironment.PRODUCTION
@@ -89,9 +94,53 @@ object Trackless {
     private var featureTracker: FeatureTracker = FeatureTracker()
     private var errorTracker: ErrorTracker = ErrorTracker()
 
+    /**
+     * The settings the running configuration was built from, compared on a
+     * repeat [configure]. `onError` is left out: a caller usually passes a new
+     * lambda each time, so it can never compare equal.
+     */
+    private data class ActiveSettings(
+        val apiKey: String,
+        val endpoint: String,
+        val environment: TracklessEnvironment,
+        val enabled: Boolean,
+        val flushIntervalSeconds: Long,
+        val debugLogging: Boolean,
+        val suppressWarnings: Boolean,
+    )
+
+    /**
+     * Everything a flush sends with, captured when the flush is requested. A
+     * flush queued before a reconfigure still runs after it, and must send the
+     * old buffer under the old key, not the new one.
+     */
+    private class FlushTarget(
+        val buffer: EventBuffer,
+        val circuitBreaker: CircuitBreaker,
+        val endpoint: String,
+        val apiKey: String,
+        val environment: TracklessEnvironment,
+        val context: EventContext,
+    )
+
+    private var activeSettings: ActiveSettings? = null
+
     private var appContext: Context? = null
+
+    /**
+     * The flush thread. Every network send runs here, never on the caller's
+     * thread: Android throws `NetworkOnMainThreadException` for a send from the
+     * main thread, which would lose the batch and trip the circuit breaker.
+     */
     private var scheduler: ScheduledExecutorService? = null
     private var flushFuture: ScheduledFuture<*>? = null
+
+    /**
+     * Flush threads handed off by [configure] or [destroy], each finishing its
+     * final flush before it stops. Held only so tests can wait for them;
+     * terminated ones are pruned on every hand-off.
+     */
+    private val retiredExecutors = ConcurrentLinkedQueue<ExecutorService>()
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
     private val activeActivityCount = AtomicInteger(0)
@@ -106,19 +155,46 @@ object Trackless {
         get() = configured.get() && !destroyed.get()
 
     /**
-     * Configure the Trackless SDK.
+     * Configure the Trackless SDK and start a new session.
      *
-     * Must be called once before any event methods.
-     * Subsequent calls are ignored (configure is idempotent).
+     * Call it once at launch, before any event methods. Calling it again with
+     * different settings — a new API key when the user switches organization,
+     * say — ends the current session, sends its buffered events under the
+     * previous settings on the flush thread, and starts a new session under the
+     * new ones. A repeat call with identical settings keeps the current session
+     * and only replaces [TracklessConfig.onError].
      */
+    @Synchronized
     fun configure(context: Context, config: TracklessConfig) {
         try {
-            if (configured.getAndSet(true)) return
+            val settings = ActiveSettings(
+                apiKey = config.apiKey,
+                endpoint = config.endpoint,
+                environment = config.environment ?: ContextDetection.detectEnvironment(context),
+                enabled = config.enabled,
+                flushIntervalSeconds = config.flushIntervalSeconds,
+                debugLogging = config.debugLogging,
+                suppressWarnings = config.suppressWarnings,
+            )
 
+            if (isConfigured) {
+                // Compare against the live enabled state: configure(enabled = true) after
+                // setEnabled(false) asks for recording, so it is a change.
+                if (settings == activeSettings?.copy(enabled = enabled.get())) {
+                    onError = config.onError
+                    debug("configure — settings unchanged, keeping the current session")
+                    return
+                }
+                retireCurrentConfiguration()
+                debug("reconfigured — previous session ended and flushed under the previous settings")
+            }
+
+            configured.set(true)
+            activeSettings = settings
             appContext = context.applicationContext
             apiKey = config.apiKey
             endpoint = config.endpoint
-            environment = config.environment ?: ContextDetection.detectEnvironment(context)
+            environment = settings.environment
             onError = config.onError
             flushIntervalSeconds = config.flushIntervalSeconds
             debugLogging = config.debugLogging
@@ -186,9 +262,7 @@ object Trackless {
                 firstUses = if (isFirstUse) 1 else null,
             )
         )
-        if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
-            performFlush()
-        }
+        flushIfOverThreshold()
         sessionManager.recordActivity()
         debug("feature — $normalizedName${if (normalizedDetail != null) " detail=$normalizedDetail" else ""}")
     }
@@ -215,9 +289,7 @@ object Trackless {
                 stepIndex = stepIndex,
             )
         )
-        if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
-            performFlush()
-        }
+        flushIfOverThreshold()
         debug("funnel — $normalizedFunnel/$normalizedStep step=$stepIndex")
     }
 
@@ -316,9 +388,7 @@ object Trackless {
                 firstOccurrences = if (isFirstOccurrence) 1 else null,
             )
         )
-        if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
-            performFlush()
-        }
+        flushIfOverThreshold()
         sessionManager.recordActivity()
         debug("${stored.value} — $normalizedName${if (normalizedCode != null) " code=$normalizedCode" else ""}")
     }
@@ -339,7 +409,9 @@ object Trackless {
     /**
      * Toggle event recording on/off.
      *
-     * When toggled off, any buffered data is immediately discarded.
+     * When toggled off, any buffered data is immediately discarded and the
+     * session is dropped without sending its end. Toggling back on starts a
+     * new session.
      */
     fun setEnabled(isEnabled: Boolean) {
         try {
@@ -356,7 +428,7 @@ object Trackless {
             } else if (!destroyed.get() && configured.get()) {
                 startPeriodicFlush()
                 registerLifecycleCallbacks()
-                sessionManager.start()
+                startNewSession()
             }
         } catch (_: Throwable) {
             // Never throws
@@ -364,35 +436,39 @@ object Trackless {
     }
 
     /**
-     * Force flush pending events to the ingest endpoint.
+     * Send pending events to the ingest endpoint now.
+     *
+     * Returns at once: the send runs on the SDK's flush thread, so this is
+     * safe to call from the main thread.
      */
     fun flush() {
         try {
-            performFlush()
+            submitFlush(currentFlushTarget())
         } catch (_: Throwable) {
             // Never throws
         }
     }
 
     /**
-     * Flush remaining events and clean up all resources.
+     * End the session, send remaining events, and release all resources.
      *
-     * After calling destroy(), the SDK is reset and must be re-configured.
+     * Returns at once: the final send runs on the SDK's flush thread, which
+     * stops once it is done, so this is safe to call from the main thread.
+     * Events recorded afterwards are dropped until [configure] is called again.
      */
+    @Synchronized
     fun destroy() {
         try {
             if (destroyed.getAndSet(true)) return
             debug("destroying")
 
-            endCurrentSession()
-            performFlush()
-            stopPeriodicFlush()
-            unregisterLifecycleCallbacks()
+            retireCurrentConfiguration()
             funnelTracker.clear()
             featureTracker.clear()
             errorTracker.clear()
             configured.set(false)
             enabled.set(false)
+            activeSettings = null
             appContext = null
         } catch (_: Throwable) {
             // Never throws
@@ -430,10 +506,7 @@ object Trackless {
             )
             addToBuffer(normalizedEvent)
 
-            // Auto-flush if buffer exceeds threshold
-            if (buffer.totalSize >= BUFFER_FLUSH_THRESHOLD) {
-                performFlush()
-            }
+            flushIfOverThreshold()
             return normalizedEvent
         } catch (_: Throwable) {
             // Never throws
@@ -452,16 +525,104 @@ object Trackless {
     }
 
     /**
-     * Perform the actual flush operation.
+     * Queue one flush when the buffer reaches [BUFFER_FLUSH_THRESHOLD]. Events
+     * recorded before that flush runs do not queue more of them.
      */
-    private fun performFlush() {
+    private fun flushIfOverThreshold() {
+        if (buffer.totalSize < BUFFER_FLUSH_THRESHOLD) return
+        if (thresholdFlushQueued.getAndSet(true)) return
+        val target = currentFlushTarget()
+        submitTask {
+            thresholdFlushQueued.set(false)
+            flushTo(target)
+        }
+    }
+
+    /** Capture the running configuration's buffer and send settings. */
+    @Synchronized
+    private fun currentFlushTarget(): FlushTarget =
+        FlushTarget(buffer, circuitBreaker, endpoint, apiKey, environment, context)
+
+    private fun submitFlush(target: FlushTarget) {
+        if (target.buffer.isEmpty) return
+        submitTask { flushTo(target) }
+    }
+
+    /**
+     * Run [task] on the flush thread. With no flush thread running — the
+     * scheduler failed to start — it gets a thread of its own rather than
+     * running on the caller's.
+     */
+    private fun submitTask(task: () -> Unit) {
+        val guarded = guarded(task)
+        try {
+            scheduler?.let {
+                it.execute(guarded)
+                return
+            }
+        } catch (_: Throwable) {
+            // Shut down between the read and the execute — fall through
+        }
+        handOff(newFlushExecutor() ?: return, guarded)
+    }
+
+    /**
+     * Give [executor] one last [task], then let it stop once the task is done.
+     */
+    private fun handOff(executor: ExecutorService, task: Runnable) {
+        try {
+            executor.execute(task)
+        } catch (_: Throwable) {
+            // Already shut down — nothing more to run
+        }
+        executor.shutdown()
+        retiredExecutors.removeIf { it.isTerminated }
+        retiredExecutors.add(executor)
+    }
+
+    /**
+     * Close the running configuration: end its session, stop its timer and
+     * lifecycle callbacks, and hand its buffer to its flush thread for one last
+     * send under its own key and endpoint. The caller is never blocked, and
+     * nothing it records afterwards lands in the retired buffer.
+     */
+    @Synchronized
+    private fun retireCurrentConfiguration() {
+        endCurrentSession()
+        unregisterLifecycleCallbacks()
+        val target = currentFlushTarget()
+
+        flushFuture?.cancel(false)
+        flushFuture = null
+        val executor = scheduler
+        scheduler = null
+        thresholdFlushQueued.set(false)
+
+        if (executor == null && target.buffer.isEmpty) return
+        handOff(executor ?: newFlushExecutor() ?: return, guarded { flushTo(target) })
+    }
+
+    private fun guarded(task: () -> Unit) = Runnable {
+        try {
+            task()
+        } catch (_: Throwable) {
+            // Never let a flush escape its thread
+        }
+    }
+
+    /**
+     * Send [target]'s buffered events. Runs on a flush thread only.
+     */
+    private fun flushTo(target: FlushTarget) {
+        val buffer = target.buffer
+        val circuitBreaker = target.circuitBreaker
         if (buffer.isEmpty) return
         if (!circuitBreaker.canAttempt()) {
             debug("flush skipped — circuit breaker open")
             return
         }
 
-        val payloads = buffer.drain(environment.value, context)
+        val payloads = buffer.drain(target.environment.value, target.context)
         if (payloads.isEmpty()) return
 
         // Enforce the server's request body size limit on each chunk before sending.
@@ -477,7 +638,7 @@ object Trackless {
         for (payload in sizedPayloads) {
             debug("flush — ${payload.events.size} events")
             try {
-                val result = HttpClient.send(endpoint, apiKey, payload)
+                val result = HttpClient.send(target.endpoint, target.apiKey, payload)
 
                 when {
                     result.isNetworkError -> {
@@ -581,16 +742,12 @@ object Trackless {
         if (flushFuture != null) return
 
         try {
-            val exec = Executors.newSingleThreadScheduledExecutor { runnable ->
-                Thread(runnable, "trackless-flush").apply {
-                    isDaemon = true
-                }
-            }
+            val exec = newFlushExecutor() ?: return
             scheduler = exec
             flushFuture = exec.scheduleAtFixedRate(
                 {
                     try {
-                        performFlush()
+                        flushTo(currentFlushTarget())
                     } catch (_: Throwable) {
                         // Never let the scheduled task die
                     }
@@ -602,6 +759,17 @@ object Trackless {
         } catch (_: Throwable) {
             // Failed to create scheduler — silent failure
         }
+    }
+
+    /** A single daemon flush thread, or null when one cannot be created. */
+    private fun newFlushExecutor(): ScheduledExecutorService? = try {
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "trackless-flush").apply {
+                isDaemon = true
+            }
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     @Synchronized
@@ -642,7 +810,7 @@ object Trackless {
                             scheduler?.submit {
                                 try {
                                     endCurrentSession()
-                                    performFlush()
+                                    flushTo(currentFlushTarget())
                                 } catch (_: Throwable) {
                                     // Never throws
                                 }
@@ -693,10 +861,27 @@ object Trackless {
     internal fun bufferSizeForTesting(): Int = buffer.totalSize
 
     /**
+     * Wait for every flush already queued — on the running flush thread and on
+     * any retired by [configure] or [destroy] — to finish.
+     */
+    internal fun awaitFlushesForTesting(timeoutMs: Long = 5_000L) {
+        try {
+            scheduler?.submit {}?.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: Throwable) {
+            // Shut down meanwhile — its work is covered by the retired executors below
+        }
+        while (true) {
+            val executor = retiredExecutors.poll() ?: break
+            executor.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /**
      * Reset internal state for testing.
      */
     internal fun resetForTesting() {
         try {
+            awaitFlushesForTesting()
             stopPeriodicFlush()
             unregisterLifecycleCallbacks()
             configured.set(false)
@@ -704,6 +889,8 @@ object Trackless {
             destroyed.set(false)
             bufferFullWarned.set(false)
             preConfigureWarned.set(false)
+            thresholdFlushQueued.set(false)
+            activeSettings = null
             onWarning = null
             buffer = EventBuffer()
             circuitBreaker = CircuitBreaker()

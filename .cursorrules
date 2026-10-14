@@ -30,7 +30,8 @@ This package is `com.tracklesstelemetry:sdk-android`, a privacy-first Android an
 - Register the Application class in AndroidManifest.xml: `android:name=".MyApp"`
 - Event names and fields (`detail`, `step`, `code`) are auto-normalized: lowercased, spaces/special chars replaced with `_`, trimmed, truncated to 100 chars. Developers can pass natural strings like `"Sign Up Button"` (becomes `"sign_up_button"`). Use the optional `detail` parameter on `feature()` and `view()` to distinguish variants — dashboard auto-groups features with detail values into donut charts
 - Performance duration is in **seconds** (not milliseconds or nanoseconds)
-- All methods are non-blocking, thread-safe, and never throw
+- All methods are non-blocking, thread-safe, and never throw — `flush()` and `destroy()` send on the SDK's own flush thread, so both are safe on the main thread
+- To change the API key at runtime (the user switches organization), call `configure()` again with the new key — the current session ends and is sent under the old key. Do NOT call `destroy()` first. A repeat call with identical settings is a no-op
 - Environment auto-detects: FLAG_DEBUGGABLE → SANDBOX, otherwise PRODUCTION
 - App version and build number are auto-read from PackageManager (the app's own versionName / versionCode)
 - The SDK sends no distribution channel and reads no install date and no install source — do NOT add firstInstallTime, getInstallSourceInfo or getInstallerPackageName

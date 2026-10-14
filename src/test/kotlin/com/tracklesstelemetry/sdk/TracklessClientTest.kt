@@ -16,10 +16,12 @@ import io.mockk.verify
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import java.util.Collections
 
 /**
  * Tests for [Trackless] static singleton API.
@@ -100,7 +102,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val payload = payloadSlot.captured
@@ -120,10 +122,10 @@ class TracklessClientTest {
     fun emptyBufferNoHttpRequest() {
         configure()
         // Flush the session:start event first
-        Trackless.flush()
+        flushAndWait()
         io.mockk.clearMocks(HttpClient, answers = false)
 
-        Trackless.flush()
+        flushAndWait()
         verify(exactly = 0) { HttpClient.send(any(), any(), any()) }
     }
 
@@ -138,7 +140,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         assertEquals("sandbox", payloadSlot.captured.environment)
@@ -153,7 +155,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         assertEquals("production", payloadSlot.captured.environment)
@@ -175,7 +177,7 @@ class TracklessClientTest {
             )
         )
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         assertEquals("sandbox", payloadSlot.captured.environment)
@@ -188,14 +190,14 @@ class TracklessClientTest {
     fun invalidNamesAreIgnored() {
         configure()
         // Flush the initial session:start event
-        Trackless.flush()
+        flushAndWait()
         io.mockk.clearMocks(HttpClient, answers = false)
 
         Trackless.feature("")
         Trackless.feature("!!!")
         Trackless.feature("@#\$%^&")
 
-        Trackless.flush()
+        flushAndWait()
 
         verify(exactly = 0) { HttpClient.send(any(), any(), any()) }
     }
@@ -208,7 +210,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("ExportClicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val featureEvents = payloadSlot.captured.events.filter { it.type == EventType.FEATURE }
@@ -230,7 +232,7 @@ class TracklessClientTest {
         )
 
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         verify(exactly = 0) { HttpClient.send(any(), any(), any()) }
     }
@@ -244,26 +246,26 @@ class TracklessClientTest {
 
         Trackless.feature("export_clicked")
         Trackless.setEnabled(false)
-        Trackless.flush()
+        flushAndWait()
 
         verify(exactly = 0) { HttpClient.send(any(), any(), any()) }
     }
 
     @Test
-    @DisplayName("setEnabled(true) resumes with empty buffer")
+    @DisplayName("setEnabled(true) resumes with an empty buffer and a new session")
     fun setEnabledTrueResumesWithEmptyBuffer() {
+        val sends = recordSends()
         configure()
 
         Trackless.feature("export_clicked")
         Trackless.setEnabled(false)
         Trackless.setEnabled(true)
-
-        Trackless.flush()
-        verify(exactly = 0) { HttpClient.send(any(), any(), any()) }
-
         Trackless.feature("new_event")
-        Trackless.flush()
-        verify(exactly = 1) { HttpClient.send(any(), any(), any()) }
+        flushAndWait()
+
+        val events = sends.flatMap { it.second.events }
+        assertEquals(listOf("new_event"), events.filter { it.type == EventType.FEATURE }.map { it.name })
+        assertEquals(listOf("start"), events.filter { it.type == EventType.SESSION }.map { it.name })
     }
 
     // ─── onError ────────────────────────────────────────────────────────────
@@ -284,7 +286,7 @@ class TracklessClientTest {
         )
 
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertEquals(1, errors.size)
         assertTrue(errors[0].message?.contains("network error") == true)
@@ -317,10 +319,10 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         Trackless.feature("import_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         verify(exactly = 1) { HttpClient.send(any(), any(), any()) }
     }
@@ -332,12 +334,12 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         every { HttpClient.send(any(), any(), any()) } returns SendResult(statusCode = 200)
 
         Trackless.feature("import_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         verify(exactly = 2) { HttpClient.send(any(), any(), any()) }
     }
@@ -353,7 +355,7 @@ class TracklessClientTest {
         configure()
         Trackless.view("home")
         Trackless.view("home")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val viewEvents = payloadSlot.captured.events.filter { it.type == EventType.VIEW }
@@ -369,7 +371,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.view("home", "tab_a")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val viewEvents = payloadSlot.captured.events.filter { it.type == EventType.VIEW }
@@ -385,7 +387,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export", "csv")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val featureEvents = payloadSlot.captured.events.filter { it.type == EventType.FEATURE }
@@ -401,7 +403,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.error("crash", "E001")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
@@ -418,7 +420,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.performance("api_call", 150.0)
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val perfEvents = payloadSlot.captured.events.filter { it.type == EventType.PERFORMANCE }
@@ -437,7 +439,7 @@ class TracklessClientTest {
         Trackless.funnel("checkout", 1, "payment")
         Trackless.funnel("checkout", 0, "cart") // duplicate — should be ignored
 
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val funnelEvents = payloadSlot.captured.events.filter { it.type == EventType.FUNNEL }
@@ -462,7 +464,7 @@ class TracklessClientTest {
         )
 
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(errors.any { it.message?.contains("400") == true })
     }
@@ -500,7 +502,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
     }
 
     @Test
@@ -510,7 +512,7 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked")
-        Trackless.destroy()
+        destroyAndWait()
     }
 
     // ─── Destroy ────────────────────────────────────────────────────────────
@@ -519,10 +521,201 @@ class TracklessClientTest {
     @DisplayName("Events after destroy are ignored")
     fun eventsAfterDestroyIgnored() {
         configure()
-        Trackless.destroy()
+        destroyAndWait()
 
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
+    }
+
+    // ─── Reconfigure ────────────────────────────────────────────────────────
+
+    private val otherApiKey = "tl_fedcba9876543210fedcba9876543210"
+
+    /** Record every send as (apiKey, payload), from whichever thread it runs on. */
+    private fun recordSends(): MutableList<Pair<String, EventPayload>> {
+        val sends = Collections.synchronizedList(mutableListOf<Pair<String, EventPayload>>())
+        every { HttpClient.send(any(), any(), any()) } answers {
+            sends.add(secondArg<String>() to thirdArg<EventPayload>())
+            SendResult(statusCode = 200)
+        }
+        return sends
+    }
+
+    private fun List<Pair<String, EventPayload>>.eventsFor(apiKey: String) =
+        filter { it.first == apiKey }.flatMap { it.second.events }
+
+    private fun sessionEvents(events: List<TracklessEvent>, name: String) =
+        events.count { it.type == EventType.SESSION && it.name == name }
+
+    @Test
+    @DisplayName("configure() with a new API key ends the session under the old key and starts one under the new")
+    fun reconfigureWithNewKeySwitchesKeyAndSession() {
+        val sends = recordSends()
+
+        configure()
+        Trackless.feature("before_switch")
+        configure(TracklessConfig(apiKey = otherApiKey, endpoint = testEndpoint, flushIntervalSeconds = 999_999L))
+        Trackless.feature("after_switch")
+        flushAndWait()
+
+        val underA = sends.eventsFor(testApiKey)
+        val underB = sends.eventsFor(otherApiKey)
+        assertEquals(listOf("before_switch"), underA.filter { it.type == EventType.FEATURE }.map { it.name })
+        assertEquals(listOf("after_switch"), underB.filter { it.type == EventType.FEATURE }.map { it.name })
+        assertEquals(1, sessionEvents(underA, "start"))
+        assertEquals(1, sessionEvents(underA, "end"))
+        assertEquals(1, sessionEvents(underB, "start"))
+        assertEquals(0, sessionEvents(underB, "end"))
+        assertTrue(Trackless.isConfigured)
+    }
+
+    @Test
+    @DisplayName("configure() with identical settings keeps the current session")
+    fun identicalReconfigureKeepsSession() {
+        val sends = recordSends()
+
+        configure()
+        Trackless.feature("one")
+        configure()
+        Trackless.feature("two")
+        flushAndWait()
+
+        val events = sends.flatMap { it.second.events }
+        assertEquals(1, sessionEvents(events, "start"))
+        assertEquals(0, sessionEvents(events, "end"))
+        assertEquals(2, events.count { it.type == EventType.FEATURE })
+    }
+
+    @Test
+    @DisplayName("configure() with identical settings replaces onError")
+    fun identicalReconfigureReplacesOnError() {
+        every { HttpClient.send(any(), any(), any()) } returns SendResult(statusCode = 500)
+        val first = mutableListOf<Throwable>()
+        val second = Collections.synchronizedList(mutableListOf<Throwable>())
+        val base = TracklessConfig(apiKey = testApiKey, endpoint = testEndpoint, flushIntervalSeconds = 999_999L)
+
+        configure(base.copy(onError = { first.add(it) }))
+        configure(base.copy(onError = { second.add(it) }))
+        Trackless.feature("export_clicked")
+        flushAndWait()
+
+        assertTrue(first.isEmpty())
+        assertTrue(second.isNotEmpty())
+    }
+
+    @Test
+    @DisplayName("configure() asking for recording after setEnabled(false) resumes it")
+    fun reconfigureAfterSetEnabledFalseResumes() {
+        val sends = recordSends()
+
+        configure()
+        Trackless.setEnabled(false)
+        Trackless.feature("while_disabled")
+        configure()
+        Trackless.feature("after_reconfigure")
+        flushAndWait()
+
+        val events = sends.flatMap { it.second.events }
+        assertEquals(listOf("after_reconfigure"), events.filter { it.type == EventType.FEATURE }.map { it.name })
+        assertEquals(1, sessionEvents(events, "start"))
+    }
+
+    @Test
+    @DisplayName("configure() after destroy() starts a new session under the new key")
+    fun configureAfterDestroy() {
+        val sends = recordSends()
+
+        configure()
+        destroyAndWait()
+        configure(TracklessConfig(apiKey = otherApiKey, endpoint = testEndpoint, flushIntervalSeconds = 999_999L))
+        Trackless.feature("after_destroy")
+        flushAndWait()
+
+        val underB = sends.eventsFor(otherApiKey)
+        assertEquals(1, sessionEvents(underB, "start"))
+        assertEquals(listOf("after_destroy"), underB.filter { it.type == EventType.FEATURE }.map { it.name })
+    }
+
+    // ─── Opt-out ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("setEnabled(false) drops the session, so destroy() sends nothing")
+    fun optOutThenDestroySendsNothing() {
+        val sends = recordSends()
+
+        configure()
+        Trackless.feature("before_opt_out")
+        Trackless.setEnabled(false)
+        destroyAndWait()
+
+        assertTrue(sends.isEmpty())
+    }
+
+    @Test
+    @DisplayName("setEnabled(true) after an opt-out starts a new session")
+    fun optInStartsNewSession() {
+        val sends = recordSends()
+
+        configure()
+        Trackless.feature("before_opt_out")
+        Trackless.setEnabled(false)
+        Trackless.setEnabled(true)
+        Trackless.feature("after_opt_in")
+        destroyAndWait()
+
+        val sessions = sends.flatMap { it.second.events }.filter { it.type == EventType.SESSION }
+        assertEquals(listOf("start", "end"), sessions.map { it.name })
+        assertEquals(1, sessions.last().stepIndex)
+    }
+
+    // ─── Off the caller's thread ────────────────────────────────────────────
+
+    private fun recordSendThreads(): MutableList<Thread> {
+        val threads = Collections.synchronizedList(mutableListOf<Thread>())
+        every { HttpClient.send(any(), any(), any()) } answers {
+            threads.add(Thread.currentThread())
+            SendResult(statusCode = 200)
+        }
+        return threads
+    }
+
+    @Test
+    @DisplayName("flush() sends on the flush thread, not the caller's")
+    fun flushSendsOffCallerThread() {
+        val threads = recordSendThreads()
+
+        configure()
+        Trackless.feature("export_clicked")
+        flushAndWait()
+
+        assertTrue(threads.isNotEmpty())
+        threads.forEach { assertNotEquals(Thread.currentThread(), it) }
+    }
+
+    @Test
+    @DisplayName("destroy() sends its final flush on the flush thread, not the caller's")
+    fun destroySendsOffCallerThread() {
+        val threads = recordSendThreads()
+
+        configure()
+        Trackless.feature("export_clicked")
+        destroyAndWait()
+
+        assertTrue(threads.isNotEmpty())
+        threads.forEach { assertNotEquals(Thread.currentThread(), it) }
+    }
+
+    @Test
+    @DisplayName("The buffer-threshold flush sends on the flush thread, not the caller's")
+    fun thresholdFlushSendsOffCallerThread() {
+        val threads = recordSendThreads()
+
+        configure()
+        repeat(120) { Trackless.feature("feature_$it") }
+        Trackless.awaitFlushesForTesting()
+
+        assertTrue(threads.isNotEmpty())
+        threads.forEach { assertNotEquals(Thread.currentThread(), it) }
     }
 
     // ─── Session Depth ──────────────────────────────────────────────────────
@@ -538,7 +731,7 @@ class TracklessClientTest {
         Trackless.feature("!!!") // rejected — invalid name
         Trackless.view("@#\$%^&") // rejected — invalid name
         Trackless.performance("api_call", -1.0) // rejected — negative duration
-        Trackless.destroy() // ends the session and flushes
+        destroyAndWait() // ends the session and flushes
 
         val endEvent = payloads.flatMap { it.events }
             .find { it.type == EventType.SESSION && it.name == "end" }
@@ -557,7 +750,7 @@ class TracklessClientTest {
         Trackless.performance("api_call", 1.0)
         Trackless.error("crash")
         Trackless.funnel("checkout", 0, "cart")
-        Trackless.destroy() // ends the session and flushes
+        destroyAndWait() // ends the session and flushes
 
         val endEvent = payloads.flatMap { it.events }
             .find { it.type == EventType.SESSION && it.name == "end" }
@@ -576,7 +769,7 @@ class TracklessClientTest {
         Trackless.feature("export_clicked")
         Trackless.feature("import_clicked")
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val featureEvents = payloadSlot.captured.events.filter { it.type == EventType.FEATURE }
@@ -598,9 +791,9 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked") // first use → firstUses=1
-        Trackless.flush() // drains the buffer — the first-use set must survive
+        flushAndWait() // drains the buffer — the first-use set must survive
         Trackless.feature("export_clicked") // same session, already seen → no firstUses
-        Trackless.flush()
+        flushAndWait()
 
         val featureEvents = payloads.flatMap { it.events }
             .filter { it.type == EventType.FEATURE && it.name == "export_clicked" }
@@ -617,11 +810,11 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("export_clicked") // session 1 first use → firstUses=1
-        Trackless.destroy() // ends session 1 (clears the set) and flushes
+        destroyAndWait() // ends session 1 (clears the set) and flushes
 
         configure()
         Trackless.feature("export_clicked") // session 2 first use → firstUses=1 again
-        Trackless.flush()
+        flushAndWait()
 
         val firstUses = payloads.flatMap { it.events }
             .filter { it.type == EventType.FEATURE && it.name == "export_clicked" }
@@ -638,9 +831,9 @@ class TracklessClientTest {
 
         configure()
         Trackless.feature("Dark Mode") // normalizes to "dark_mode" → first use → firstUses=1
-        Trackless.flush()
+        flushAndWait()
         Trackless.feature("dark_mode") // same normalized name → firstUses omitted
-        Trackless.flush()
+        flushAndWait()
 
         val featureEvents = payloads.flatMap { it.events }
             .filter { it.type == EventType.FEATURE && it.name == "dark_mode" }
@@ -658,7 +851,7 @@ class TracklessClientTest {
         configure()
         Trackless.feature("export_clicked")
         Trackless.feature("import_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         val featureEvents = payloadSlot.captured.events.filter { it.type == EventType.FEATURE }
         assertEquals(2, featureEvents.size)
@@ -677,7 +870,7 @@ class TracklessClientTest {
         Trackless.error("crash")
         Trackless.funnel("checkout", 0, "cart")
         Trackless.feature("export_clicked")
-        Trackless.flush()
+        flushAndWait()
 
         val events = payloadSlot.captured.events
         val nonFeature = events.filter { it.type != EventType.FEATURE }
@@ -696,9 +889,9 @@ class TracklessClientTest {
 
         configure()
         Trackless.error("payment_failed") // first occurrence → firstOccurrences=1
-        Trackless.flush() // drains the buffer — the first-occurrence set must survive
+        flushAndWait() // drains the buffer — the first-occurrence set must survive
         Trackless.error("payment_failed") // same session, already seen → no firstOccurrences
-        Trackless.flush()
+        flushAndWait()
 
         val errorEvents = payloads.flatMap { it.events }
             .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
@@ -715,11 +908,11 @@ class TracklessClientTest {
 
         configure()
         Trackless.error("payment_failed") // session 1 first occurrence → firstOccurrences=1
-        Trackless.destroy() // ends session 1 (clears the set) and flushes
+        destroyAndWait() // ends session 1 (clears the set) and flushes
 
         configure()
         Trackless.error("payment_failed") // session 2 first occurrence → firstOccurrences=1 again
-        Trackless.flush()
+        flushAndWait()
 
         val firstOccurrences = payloads.flatMap { it.events }
             .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
@@ -736,9 +929,9 @@ class TracklessClientTest {
 
         configure()
         Trackless.error("Payment Failed") // normalizes to "payment_failed" → firstOccurrences=1
-        Trackless.flush()
+        flushAndWait()
         Trackless.error("payment_failed") // same normalized name → firstOccurrences omitted
-        Trackless.flush()
+        flushAndWait()
 
         val errorEvents = payloads.flatMap { it.events }
             .filter { it.type == EventType.ERROR && it.name == "payment_failed" }
@@ -756,7 +949,7 @@ class TracklessClientTest {
         configure()
         Trackless.error("payment_failed")
         Trackless.error("api_timeout")
-        Trackless.flush()
+        flushAndWait()
 
         val errorEvents = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
         assertEquals(2, errorEvents.size)
@@ -774,7 +967,7 @@ class TracklessClientTest {
         Trackless.error("payment_failed", ErrorSeverity.ERROR, "E001")
         Trackless.error("payment_failed", ErrorSeverity.WARNING, "E002")
         Trackless.error("payment_failed", ErrorSeverity.FATAL)
-        Trackless.flush()
+        flushAndWait()
 
         // Every severity now stores as `error`, so the keys differ only by code:
         // three distinct rollup keys, one first occurrence total.
@@ -796,7 +989,7 @@ class TracklessClientTest {
         Trackless.feature("export_clicked")
         Trackless.funnel("checkout", 0, "cart")
         Trackless.error("crash")
-        Trackless.flush()
+        flushAndWait()
 
         val events = payloadSlot.captured.events
         val nonError = events.filter { it.type != EventType.ERROR }
@@ -813,10 +1006,10 @@ class TracklessClientTest {
 
         configure()
         Trackless.error("payment_failed") // first occurrence, flushed away
-        Trackless.flush()
+        flushAndWait()
         Trackless.error("payment_failed")
         Trackless.error("payment_failed")
-        Trackless.flush()
+        flushAndWait()
 
         val repeatEvent = payloads.last().events.single { it.type == EventType.ERROR }
         assertEquals(2, repeatEvent.count)

@@ -52,7 +52,7 @@ Trackless.view("settings_notifications")
 
 ### Call `Trackless.configure(...)` exactly once in `Application.onCreate`
 
-Never in `Activity.onCreate`, never in a `ViewModel`, never on demand. Register the `Application` subclass in `AndroidManifest.xml` with `android:name`.
+Never in `Activity.onCreate`, never in a `ViewModel`, never on demand. Register the `Application` subclass in `AndroidManifest.xml` with `android:name`. The one later call that belongs anywhere else is a new API key at runtime — see [Changing the API key at runtime](#changing-the-api-key-at-runtime).
 
 ## 1. Install
 
@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.5.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.5.1")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.5.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.5.1'
 }
 ```
 
@@ -381,6 +381,37 @@ Each value's count then equals the number of sessions that reported it — 3,100
 
 **Do not share a name between `error(name, code)` and `info(name, detail)`.** They are stored in one place, distinguished only by level, and the session-reach marker dedups on the name alone — so a name used by both methods in one session is marked once and reads as two unrelated rows.
 
+#### Reporting the device model
+
+The SDK never reads the device model. Device class (phone, tablet) is the only hardware context it sends, and that does not change. If you want to know which models your app runs on, report the model yourself as an info value — it is your declaration, like a feature name, and it is counted the same way.
+
+On Android, **bound the value before you send it.** `Build.MODEL` has tens of thousands of values with a long tail of handsets only a few people own. Name the models you care about and collapse the rest:
+
+```kotlin
+import android.os.Build
+
+// The models you want counted by name. Everything else is one value.
+private val KNOWN_MODELS = setOf(
+    "Pixel 9", "Pixel 9 Pro", "Pixel 9a",
+    "SM-S921B", "SM-S926B", "SM-A546B",
+)
+
+fun hardwareModel(): String = Build.MODEL.takeIf { it in KNOWN_MODELS } ?: "other"
+
+Trackless.configure(context = this, config = TracklessConfig(apiKey = BuildConfig.TRACKLESS_API_KEY))
+Trackless.info("device_model", hardwareModel())   // stored as "pixel_9_pro", "sm-s921b" or "other"
+```
+
+The dashboard's Info page then lists `device_model`, and its detail page shows sessions per model. Start with a short list; a large `other` share tells you when it is worth adding to. `Build.MANUFACTURER` is a reasonable coarser alternative if the maker is all you need.
+
+Three things to know before you add it:
+
+- **A model is not a device identifier.** `Pixel 9 Pro` names a product line that many devices share, which is why it is allowed. A serial number, an IMEI, an SSAID, the user-set device name or anything else that names *one* device is a device identifier, and the [Terms](https://tracklesstelemetry.com/terms#acceptable-use) forbid putting one in any field.
+- **Each model is one value in your app's daily budget of unique names and values**, shared with every feature, view and error name you send. Unbounded `Build.MODEL` can use that budget up, and values first seen after it runs out are rejected for the rest of the day — including a feature name you shipped that morning. The allowlist above is what prevents it.
+- **It changes what your app reports, so check your own disclosures.** The Trackless privacy pages say the SDK does not collect the device model, and that stays true; your privacy policy should not repeat that sentence about your app once you send one. In Google Play's Data Safety form the value falls under the *Diagnostics* row you already declare for info events.
+
+Like every info value, a model's count can be filtered by the other dimensions (region, language, OS version). In a small app a rare model in a small country can be a very small number of sessions. That is the reason the SDK does not send the model for you, and the second reason to keep the list short.
+
 #### Migrating from the `severity` parameter
 
 `error(name, severity, code)` still compiles and still records — the parameter is deprecated, not removed, so no published call breaks. The SDK maps what you pass to one of two stored levels before the event is buffered:
@@ -456,7 +487,7 @@ This is enforced server-side: a per-app daily cardinality budget caps the number
 
 Sessions are managed automatically via `ActivityLifecycleCallbacks`. No code needed.
 
-- **Start:** A session begins when `Trackless.configure()` is called, and a new session starts each time the app returns to the foreground
+- **Start:** A session begins when `Trackless.configure()` is called, and a new session starts each time the app returns to the foreground or `configure()` is called again with different settings
 - **End:** A session ends when all Activities leave the foreground — the session-end event (with duration and depth) is flushed immediately
 - **Depth:** Session depth is **events per session**. Every non-session event increments it — views, features, funnel steps, performance measurements, errors and `info()` calls alike
 - **Duration:** Measured from session start to session end
@@ -481,17 +512,30 @@ if (Trackless.isConfigured) {
 }
 
 // Disable recording (e.g., user opts out)
-Trackless.setEnabled(false)   // Discards buffer, stops timers
+Trackless.setEnabled(false)   // Discards buffer and session, stops timers
 
 // Re-enable recording
-Trackless.setEnabled(true)    // Resumes from empty buffer
+Trackless.setEnabled(true)    // Resumes with a new session
 
 // Force flush
-Trackless.flush()
+Trackless.flush()             // Returns at once; sends on the SDK's flush thread
 
-// Permanent shutdown
-Trackless.destroy()           // Flushes remaining events, then disables permanently
+// Shutdown
+Trackless.destroy()           // Ends the session and sends remaining events on the flush thread;
+                              // events are dropped until configure() is called again
 ```
+
+Every control method returns at once and is safe on the main thread: network sends run only on the SDK's own flush thread.
+
+### Changing the API key at runtime
+
+When the key changes while the app runs — the user joins, switches or leaves an organization — call `configure()` again with the new key:
+
+```kotlin
+Trackless.configure(context, TracklessConfig(apiKey = keyForOrganization(org)))
+```
+
+The current session ends, its buffered events are sent under the previous key, and a new session starts under the new one. The call returns at once; the send runs on the SDK's flush thread. A repeat call with identical settings keeps the current session and only replaces `onError`, so a stray second call costs nothing. There is no need to call `destroy()` first.
 
 ## 8. Complete Integration Example
 
@@ -661,6 +705,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 
 - **No GAID (Google Advertising ID) or SSAID**
 - **No device serial number, IMEI, or hardware identifiers**
+- **No device model** — the SDK reads only a phone/tablet class. A model reaches Trackless only if you report one yourself as an info value ([Reporting the device model](#reporting-the-device-model))
 - **No IP address processing by application code** — IP addresses are never read, parsed, stored, or used by the SDK or the Trackless backend. Region comes from system locale, not IP geolocation. (AWS infrastructure receives IP addresses for network routing and DDoS protection as part of standard cloud operations, but they are not used for analytics.)
 - **No persistent storage** — no SharedPreferences, files, databases, or any local persistence
 - **Nothing about this installation** — no install date, no install source. The SDK stores nothing on the device and reads nothing stored there
@@ -671,7 +716,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.5.0"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.5.1"`). All are coarse, non-identifying dimensions.
 
 Every one of them is either a runtime property the OS exposes to every app (OS version, device class, locale, language) or a constant compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). The SDK does not ask `PackageManager` when the app was installed or who installed it, so a release build cannot tell a store install from a sideload; it sends no distribution channel at all.
 
@@ -740,10 +785,8 @@ Trackless.configure(
 )
 
 Trackless.feature("integration_test")
-Thread { Trackless.flush() }.start() // flush() performs network I/O on the calling thread
+Trackless.flush() // returns at once; the send runs on the SDK's flush thread
 ```
-
-**`Trackless.flush()` sends synchronously on the calling thread.** From the main thread, Android raises `NetworkOnMainThreadException`, which the SDK swallows and logs as `flush failed — network error`. Call `flush()` from a background thread or a coroutine on `Dispatchers.IO` — or skip the manual flush and background the app, which triggers the lifecycle flush.
 
 The SDK logs to **logcat** with tag `Trackless` (`adb logcat -s Trackless`). Look for these signals, in order:
 
@@ -770,5 +813,5 @@ The ingest endpoint's error responses are deliberately generic on the wire — t
 | `flush rejected — status=402`                               | The plan's monthly event quota is reached. The endpoint stops accepting events — nothing converts silently and nothing is billed as overage.                                  | Wait for the next billing period, or upgrade the plan in the dashboard.                                                                                                                   |
 | `flush rejected — status=413`                               | The request body was over the 50 KB ingest limit or arrived without a `Content-Length` header. The SDK splits batches below 50 KB, so this points to a proxy or custom endpoint that rewrites the request, or a modified client. | Send to the Trackless endpoint directly, or make sure the proxy forwards the body unchanged with its `Content-Length`. |
 | `flush rejected — status=429`                               | Per-app rate limit. The SDK discards the batch without retrying (4xx never triggers the circuit breaker).                                                                     | Back off. Persistent 429s usually mean an event-volume bug — e.g., recording inside a recomposing Composable. Client-side rollup normally keeps request rates far below the limit.        |
-| `flush failed — status=5xx` or `flush failed — network error` | Server or network problem — or a main-thread `flush()` (see Section 12). The failed batch is **not** re-sent (its events are dropped); a circuit breaker pauses further flush attempts with backoff (30s → 1m → 5m → 15m → 60m), and a single success resets it. While it is open, flushes log `flush skipped — circuit breaker open`. | Rule out the main-thread flush first. Otherwise nothing — subsequent events flush normally once the endpoint recovers. |
+| `flush failed — status=5xx` or `flush failed — network error` | Server or network problem. The failed batch is **not** re-sent (its events are dropped); a circuit breaker pauses further flush attempts with backoff (30s → 1m → 5m → 15m → 60m), and a single success resets it. While it is open, flushes log `flush skipped — circuit breaker open`. | Nothing — subsequent events flush normally once the endpoint recovers. |
 | No request ever sent                                        | The device/emulator is offline, a proxy/firewall blocks the endpoint, or the SDK never recorded anything.                                                                     | Confirm `configure()` ran (a one-time `event dropped — SDK is not configured` warning appears otherwise), that events were recorded (debug lines), and that the circuit breaker is not open from earlier failures. |

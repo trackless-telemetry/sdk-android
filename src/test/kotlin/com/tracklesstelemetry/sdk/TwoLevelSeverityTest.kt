@@ -132,7 +132,7 @@ class TwoLevelSeverityTest {
         Trackless.error("e_warning", ErrorSeverity.WARNING)
         Trackless.error("e_error", ErrorSeverity.ERROR)
         Trackless.error("e_fatal", ErrorSeverity.FATAL)
-        Trackless.flush()
+        flushAndWait()
 
         val byName = payloadSlot.captured.events
             .filter { it.type == EventType.ERROR }
@@ -155,7 +155,7 @@ class TwoLevelSeverityTest {
         Trackless.error("payment_failed", ErrorSeverity.FATAL, "DECLINED")
         Trackless.error("payment_failed", ErrorSeverity.WARNING, "DECLINED")
         Trackless.error("payment_failed", ErrorSeverity.ERROR, "DECLINED")
-        Trackless.flush()
+        flushAndWait()
 
         val errors = payloadSlot.captured.events.filter { it.type == EventType.ERROR }
         assertEquals(1, errors.size)
@@ -175,7 +175,7 @@ class TwoLevelSeverityTest {
 
         configure()
         Trackless.info("tier", "paid")
-        Trackless.flush()
+        flushAndWait()
 
         val event = payloadSlot.captured.events.first { it.type == EventType.ERROR }
         assertEquals("tier", event.name)
@@ -197,7 +197,7 @@ class TwoLevelSeverityTest {
 
         configure()
         Trackless.info("offline_fallback")
-        Trackless.flush()
+        flushAndWait()
 
         val event = payloadSlot.captured.events.first { it.type == EventType.ERROR }
         assertEquals(ErrorSeverity.INFO, event.severity)
@@ -214,7 +214,7 @@ class TwoLevelSeverityTest {
         configure()
         Trackless.error("tier")
         Trackless.info("tier", "paid")
-        Trackless.flush()
+        flushAndWait()
 
         val rows = payloadSlot.captured.events.filter { it.type == EventType.ERROR && it.name == "tier" }
         assertEquals(2, rows.size)
@@ -231,7 +231,7 @@ class TwoLevelSeverityTest {
         configure()
         Trackless.info("tier", "paid")
         Trackless.info("tier", "paid")
-        Trackless.flush()
+        flushAndWait()
 
         val row = payloadSlot.captured.events.first { it.type == EventType.ERROR && it.name == "tier" }
         assertEquals(2, row.count)
@@ -248,7 +248,7 @@ class TwoLevelSeverityTest {
         Trackless.info("tier", "paid")
         Trackless.info("units", "metric")
         Trackless.info("tier", "paid")
-        Trackless.destroy() // ends the session and flushes
+        destroyAndWait() // ends the session and flushes
 
         val endEvent = payloads.flatMap { it.events }
             .find { it.type == EventType.SESSION && it.name == "end" }
@@ -265,7 +265,7 @@ class TwoLevelSeverityTest {
         configure()
         Trackless.info("tier", "Paid Tier")
         Trackless.info("contact", "user@example.com")
-        Trackless.flush()
+        flushAndWait()
 
         val byName = payloadSlot.captured.events
             .filter { it.type == EventType.ERROR }
@@ -282,7 +282,7 @@ class TwoLevelSeverityTest {
 
         configure()
         Trackless.info("!!!", "paid") // normalizes to empty — the same guard error() applies
-        Trackless.flush()
+        flushAndWait()
 
         assertTrue(payloads.flatMap { it.events }.none { it.type == EventType.ERROR })
     }

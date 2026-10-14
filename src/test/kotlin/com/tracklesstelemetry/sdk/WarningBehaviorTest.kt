@@ -189,7 +189,7 @@ class WarningBehaviorTest {
         Trackless.feature("two")
 
         // Destroying and reconfiguring starts a new session, which re-arms the warning.
-        Trackless.destroy()
+        destroyAndWait()
         configure()
         Trackless.replaceBufferForTesting(maxItems = 1)
         Trackless.feature("three")

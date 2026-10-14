@@ -50,7 +50,7 @@ Trackless.view("settings_notifications")
 
 ### 3. Call `configure()` exactly once at app launch
 
-In `Application.onCreate()`. Never in Activity `onCreate`, ViewModel constructors, or anywhere else that runs more than once per process.
+In `Application.onCreate()`. Never in Activity `onCreate`, ViewModel constructors, or anywhere else that runs more than once per process. To change the API key at runtime — the user switches organization — call `configure()` again with the new key: the current session ends, its buffered events go out under the old key, and a new session starts under the new one. A repeat call with identical settings is a no-op.
 
 ## Requirements
 
@@ -66,7 +66,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.5.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.5.1")
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.5.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.5.1'
 }
 ```
 
@@ -153,11 +153,11 @@ All methods are static, non-blocking, non-throwing, and safe to call from any th
 ```kotlin
 Trackless.isConfigured         // Check if SDK is ready (useful in shared code)
 
-Trackless.setEnabled(false)    // Stop recording, discard buffer
-Trackless.setEnabled(true)     // Resume recording
+Trackless.setEnabled(false)    // Stop recording, discard buffer and session
+Trackless.setEnabled(true)     // Resume recording in a new session
 
-Trackless.flush()              // Force-send buffered events
-Trackless.destroy()            // Flush and permanently disable
+Trackless.flush()              // Send buffered events now (on the SDK's flush thread)
+Trackless.destroy()            // End the session, send what is left, stop until configure()
 ```
 
 ## Errors and Info — Two Levels
@@ -216,7 +216,7 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 | `language`        | `"en"`          | `Locale.getDefault()` (language) |
 | `appVersion`      | `"2.1.0"`       | `PackageManager` (your app's own `versionName`) |
 | `buildNumber`     | `"142"`         | `PackageManager` (your app's own `versionCode`) |
-| `sdkVersion`      | `"android/0.5.0"` | SDK platform and version identifier |
+| `sdkVersion`      | `"android/0.5.1"` | SDK platform and version identifier |
 
 **The SDK stores nothing on the device and reads nothing stored there.** It uses only runtime properties the OS exposes to every app (OS version, device class, locale, language) and constants compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). It does not ask `PackageManager` when the app was installed or who installed it. `FLAG_DEBUGGABLE` decides only `environment`.
 
