@@ -24,7 +24,7 @@ import java.util.Locale
  */
 internal object ContextDetection {
 
-    private const val SDK_VERSION = "android/0.5.1"
+    private const val SDK_VERSION = "android/0.6.0"
 
     /**
      * Detect the full event context.

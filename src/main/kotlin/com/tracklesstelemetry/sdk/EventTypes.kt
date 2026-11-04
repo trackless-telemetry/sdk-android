@@ -43,7 +43,7 @@ enum class ErrorSeverity(val value: String) {
     /** The level [Trackless.error] sends. */
     ERROR("error"),
 
-    @Deprecated("Nothing reads `fatal` — it is sent as `error`, and no SDK captures crashes. Call Trackless.error(name, code) instead.")
+    @Deprecated("Nothing reads `fatal` — it is sent as `error`. Uncaught exceptions are counted only by TracklessConfig(captureUncaught = true), as trackless.uncaught. Call Trackless.error(name, code) instead.")
     FATAL("fatal");
 }
 

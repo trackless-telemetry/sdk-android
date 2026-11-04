@@ -66,7 +66,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.5.1")
+    implementation("com.tracklesstelemetry:sdk-android:0.6.0")
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.5.1'
+    implementation 'com.tracklesstelemetry:sdk-android:0.6.0'
 }
 ```
 
@@ -127,9 +127,15 @@ Trackless.configure(
         flushIntervalSeconds = 60L,                              // Optional — how often buffered events are sent
         debugLogging = false,                                    // Optional — enable debug logging for happy-path events
         suppressWarnings = false,                                // Optional — suppress warning and error logging
+        measureLaunch = true,                                    // Optional — send trackless.launch once per process (off by default)
+        launchThresholdSeconds = 2.0,                            // Optional — threshold for trackless.launch
+        detectHangs = true,                                      // Optional — send trackless.hang for each hang of 250 ms or more (off by default)
+        captureUncaught = true,                                  // Optional — count uncaught exceptions as trackless.uncaught (off by default)
     )
 )
 ```
+
+`measureLaunch`, `detectHangs` and `captureUncaught` are **off by default** because each changes your Play Data safety form (see [Google Play Data Safety](#google-play-data-safety)); [GUIDE.md](GUIDE.md) defines what each measures and what it misses.
 
 **Environment auto-detection:** Debug builds (with `FLAG_DEBUGGABLE`) automatically use `SANDBOX`, release builds use `PRODUCTION`. Override by passing `environment` explicitly.
 
@@ -147,6 +153,12 @@ All methods are static, non-blocking, non-throwing, and safe to call from any th
 | `Trackless.performance(name: String, durationSeconds: Double, thresholdSeconds: Double?)` | Timing measurement (seconds)        |
 | `Trackless.error(name: String, code: String?)`                                           | Something went wrong — counts toward errors per session and every alert |
 | `Trackless.info(name: String, detail: String?)`                                          | Something worth counting that the user did not do and that did not go wrong — never counts toward errors or alerts |
+| `Trackless.startTimer(name: String)`                                                     | Start a timer; starting an open name restarts it (at most 50 open) |
+| `Trackless.stopTimer(name: String, thresholdSeconds: Double? = null)`                    | Stop it and send the elapsed seconds as `performance()`; nothing if no timer is open |
+| `Trackless.cancelTimer(name: String)`                                                    | Drop it and send nothing |
+| `Trackless.measure(name: String, thresholdSeconds: Double? = null) { … }`                | Time the block and return its value; sends only when it completes normally |
+
+Session end discards every open timer, so a timer never measures time the app was in the background.
 
 ### Control Methods
 
@@ -191,7 +203,7 @@ All event fields (`name`, `detail`, `step`, `code`) are automatically normalized
 - **Auto-lowercase:** fields are lowercased (`Export_Clicked` -> `export_clicked`)
 - **Trim/collapse:** leading/trailing `_`/`.` trimmed, consecutive dots collapsed
 - **Truncate:** fields are truncated to 100 characters
-- **No identifiers:** UUIDs, long hex strings, and long numeric strings are rejected
+- **No identifiers:** a UUID or 24+ hex characters anywhere in a field, and long hex-only or numeric-only values, are rejected
 - **PII stripping:** emails, phone numbers, and SSN patterns are stripped from all fields
 
 ## How It Works
@@ -216,7 +228,7 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 | `language`        | `"en"`          | `Locale.getDefault()` (language) |
 | `appVersion`      | `"2.1.0"`       | `PackageManager` (your app's own `versionName`) |
 | `buildNumber`     | `"142"`         | `PackageManager` (your app's own `versionCode`) |
-| `sdkVersion`      | `"android/0.5.1"` | SDK platform and version identifier |
+| `sdkVersion`      | `"android/0.6.0"` | SDK platform and version identifier |
 
 **The SDK stores nothing on the device and reads nothing stored there.** It uses only runtime properties the OS exposes to every app (OS version, device class, locale, language) and constants compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). It does not ask `PackageManager` when the app was installed or who installed it. `FLAG_DEBUGGABLE` decides only `environment`.
 
@@ -229,8 +241,8 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 - No install date or install source — nothing `PackageManager` keeps about this installation
 - No cross-session linking of any kind
 - No data sent to third parties
-- No stack traces, crash logs, or error messages — error and info tracking uses only developer-defined names and codes
-- No individual performance measurements stored — durations are aggregated into statistical digests
+- No stack traces, crash logs, or error messages — error and info tracking uses only developer-defined names and codes; with `captureUncaught` on, the SDK adds a count of uncaught exceptions by class name, and nothing else about them
+- No performance measurement stored as its own record — durations are aggregated into statistical digests, though a row with very few samples approximates their values
 - PII auto-stripping of email addresses, phone numbers, and SSN patterns from all event fields
 - No Android permissions required
 
@@ -238,11 +250,14 @@ The SDK captures a small set of **coarse, non-identifying** dimensions:
 
 When completing the Data Safety section in Google Play Console, declare the following (all **Not Linked to User Identity**, **Not Shared with Third Parties**):
 
-| Category                       | Data Type        | Why                                                                  |
-| ------------------------------ | ---------------- | -------------------------------------------------------------------- |
-| App activity                   | App interactions | Feature counts, view counts, funnel steps                            |
-| App info and performance       | Diagnostics      | Error and info events (name, level, code) — not *Crash logs*          |
-| App info and performance       | Diagnostics      | Performance metrics (duration digest — no individual measurements)   |
+| Category                 | Data Type        | Why                                                                                                                                              |
+| ------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| App activity             | App interactions | Feature counts, view counts, funnel steps                                                                                                        |
+| App info and performance | Diagnostics      | Error and info events (name, level, code) — not *Crash logs* unless `captureUncaught` is on                                                      |
+| App info and performance | Crash logs       | **Only when `captureUncaught` is on**: a count of uncaught exceptions by class name (`trackless.uncaught`), with no message or stack trace     |
+| App info and performance | Diagnostics      | Performance metrics you send (a duration digest, not individual records; a row with very few samples approximates their values)                 |
+| App info and performance | Diagnostics      | **When `measureLaunch` is on:** `trackless.launch`, seconds from process start to the first frame. Declare this row even if your app sends no metrics of its own |
+| App info and performance | Diagnostics      | **When `detectHangs` is on:** `trackless.hang`, seconds the main thread was unresponsive, per hang of 250 ms or more. Not *Crash logs*            |
 
 ## License
 

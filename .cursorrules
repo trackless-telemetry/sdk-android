@@ -18,6 +18,7 @@ This package is `com.tracklesstelemetry:sdk-android`, a privacy-first Android an
    - `Trackless.performance("api_fetch", durationSeconds = 0.342)` — timing in seconds (optional threshold: `Trackless.performance("api_fetch", durationSeconds = 0.342, thresholdSeconds = 2.0)`)
    - `Trackless.error("payment_failed", "DECLINED")` — something went wrong; counts toward errors per session and every alert
    - `Trackless.info("tier", "paid")` — something worth counting that the user did not do and that did not go wrong; never counts toward errors or alerts
+   - `Trackless.startTimer("checkout")` / `Trackless.stopTimer("checkout", thresholdSeconds = 2.0)` / `Trackless.cancelTimer("checkout")`, or `Trackless.measure("csv_parse") { parser.parse(file) }` — timing without reading a clock yourself; session end discards open timers
 
 ## Important Rules
 
@@ -30,6 +31,9 @@ This package is `com.tracklesstelemetry:sdk-android`, a privacy-first Android an
 - Register the Application class in AndroidManifest.xml: `android:name=".MyApp"`
 - Event names and fields (`detail`, `step`, `code`) are auto-normalized: lowercased, spaces/special chars replaced with `_`, trimmed, truncated to 100 chars. Developers can pass natural strings like `"Sign Up Button"` (becomes `"sign_up_button"`). Use the optional `detail` parameter on `feature()` and `view()` to distinguish variants — dashboard auto-groups features with detail values into donut charts
 - Performance duration is in **seconds** (not milliseconds or nanoseconds)
+- For launch time and main-thread hangs, use `TracklessConfig(..., measureLaunch = true, detectHangs = true)` instead of hand-rolled metrics. A process that is not in the foreground when `configure()` runs (started for a broadcast, job, service or provider, and opened later) sends no launch time, so call `configure()` in `Application.onCreate`; a launch longer than 60 seconds is dropped. Both are off by default; turning either on means the app must declare **App info and performance → Diagnostics** in its Play Data safety form — tell the developer
+- To count uncaught exceptions, use `TracklessConfig(..., captureUncaught = true)`: each uncaught exception is sent as `error("trackless.uncaught", code = <class name>)`, with no message or stack trace, chained to any crash reporter already installed (Crashlytics keeps working). ANRs and native crashes are not counted. Off by default; turning it on means the app must declare **App info and performance → Crash logs** in its Play Data safety form — tell the developer. With it off, the SDK captures no crashes
+- Names starting with `trackless.` are reserved for the SDK's own events (`trackless.launch`, `trackless.hang`, `trackless.uncaught`) — never pass one to `performance()`, `startTimer`, `measure`, `error()` or `info()`
 - All methods are non-blocking, thread-safe, and never throw — `flush()` and `destroy()` send on the SDK's own flush thread, so both are safe on the main thread
 - To change the API key at runtime (the user switches organization), call `configure()` again with the new key — the current session ends and is sent under the old key. Do NOT call `destroy()` first. A repeat call with identical settings is a no-op
 - Environment auto-detects: FLAG_DEBUGGABLE → SANDBOX, otherwise PRODUCTION

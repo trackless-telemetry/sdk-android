@@ -5,14 +5,16 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Trackless — privacy-first analytics SDK for Android.
@@ -65,6 +67,38 @@ object Trackless {
     private var flushIntervalSeconds: Long = 60L
     private var debugLogging: Boolean = false
     private var suppressWarnings: Boolean = false
+    private var measureLaunch: Boolean = false
+    private var launchThresholdSeconds: Double? = null
+    private var detectHangs: Boolean = false
+
+    /** Read on the crashing thread, so volatile. */
+    @Volatile
+    private var captureUncaught: Boolean = false
+
+    /**
+     * Names starting with this are reserved for what the SDK sends itself.
+     * [performance], [startTimer], [measure], [error] and [info] warn once per
+     * process when given one, and send it anyway.
+     */
+    internal const val RESERVED_NAME_PREFIX = "trackless."
+
+    /** The metric [TracklessConfig.measureLaunch] sends. */
+    internal const val LAUNCH_METRIC = "trackless.launch"
+
+    /** The metric [TracklessConfig.detectHangs] sends. */
+    internal const val HANG_METRIC = "trackless.hang"
+
+    /** The error name [TracklessConfig.captureUncaught] sends. */
+    internal const val UNCAUGHT_ERROR = "trackless.uncaught"
+
+    /** The code sent when an exception's class name does not survive normalization. */
+    internal const val UNCAUGHT_UNKNOWN_CODE = "unknown"
+
+    /** How long the crashing thread waits for its send before the previous handler runs. */
+    internal const val UNCAUGHT_SEND_CAP_MS = 1_500L
+
+    /** One-shot flag: the reserved-prefix warning is logged once per process. */
+    private val reservedPrefixWarned = AtomicBoolean(false)
 
     private const val TAG = "Trackless"
     private const val BUFFER_FLUSH_THRESHOLD = 100
@@ -95,6 +129,31 @@ object Trackless {
     private var errorTracker: ErrorTracker = ErrorTracker()
 
     /**
+     * Open timers. Not replaced on [configure], so a timer started before the
+     * first configure survives it; a reconfigure discards them through
+     * [endCurrentSession].
+     */
+    private var timers: OpenTimers = OpenTimers()
+
+    /**
+     * The [TracklessConfig.measureLaunch] probe. Never replaced on [configure]
+     * or [destroy], so it measures once per process.
+     */
+    private var launchProbe: LaunchProbe = LaunchProbe()
+
+    /** The [TracklessConfig.detectHangs] watchdog. */
+    private var hangWatchdog: HangWatchdog = HangWatchdog()
+
+    /**
+     * The [TracklessConfig.captureUncaught] handler. Installed at most once per
+     * process and never removed; while the option is off it only forwards.
+     */
+    private var uncaughtCapture: UncaughtCapture = UncaughtCapture()
+
+    /** How the first frame of a resumed Activity is found. Replaced in tests. */
+    private var firstFrameWaiter: (Activity, () -> Unit) -> Unit = FirstFrame::await
+
+    /**
      * The settings the running configuration was built from, compared on a
      * repeat [configure]. `onError` is left out: a caller usually passes a new
      * lambda each time, so it can never compare equal.
@@ -107,6 +166,10 @@ object Trackless {
         val flushIntervalSeconds: Long,
         val debugLogging: Boolean,
         val suppressWarnings: Boolean,
+        val measureLaunch: Boolean,
+        val launchThresholdSeconds: Double?,
+        val detectHangs: Boolean,
+        val captureUncaught: Boolean,
     )
 
     /**
@@ -143,7 +206,21 @@ object Trackless {
     private val retiredExecutors = ConcurrentLinkedQueue<ExecutorService>()
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
-    private val activeActivityCount = AtomicInteger(0)
+    /**
+     * The Activities this SDK has seen start and not yet seen stop, held weakly
+     * so a leaked callback never keeps an Activity alive.
+     *
+     * A set rather than a counter, because registration can happen while an
+     * Activity is already showing — a `configure()` from a screen, or
+     * `setEnabled(true)` from a settings screen. A counter starting at 0 then
+     * went to -1 when that screen stopped, and the next start only brought it
+     * back to 0, so no session began until the count passed 1 again. A stop for
+     * an Activity the set never held leaves it unchanged; when the set is empty
+     * after a stop the app is in the background, which is true whichever way
+     * the screen got there.
+     */
+    private val startedActivities: MutableSet<Activity> =
+        Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
 
     /** Test-only hook — receives each warning message that passes the suppression check. */
     internal var onWarning: ((String) -> Unit)? = null
@@ -167,6 +244,10 @@ object Trackless {
     @Synchronized
     fun configure(context: Context, config: TracklessConfig) {
         try {
+            // The probe arms on the first configure that asks for it; it ignores every later one.
+            // A background start (the process not in the foreground now) finishes it instead.
+            if (config.measureLaunch) launchProbe.arm()
+            val validThreshold = config.launchThresholdSeconds?.takeIf { it.isFinite() && it > 0 }
             val settings = ActiveSettings(
                 apiKey = config.apiKey,
                 endpoint = config.endpoint,
@@ -175,6 +256,10 @@ object Trackless {
                 flushIntervalSeconds = config.flushIntervalSeconds,
                 debugLogging = config.debugLogging,
                 suppressWarnings = config.suppressWarnings,
+                measureLaunch = config.measureLaunch,
+                launchThresholdSeconds = validThreshold,
+                detectHangs = config.detectHangs,
+                captureUncaught = config.captureUncaught,
             )
 
             if (isConfigured) {
@@ -199,6 +284,10 @@ object Trackless {
             flushIntervalSeconds = config.flushIntervalSeconds
             debugLogging = config.debugLogging
             suppressWarnings = config.suppressWarnings
+            measureLaunch = config.measureLaunch
+            launchThresholdSeconds = validThreshold
+            detectHangs = config.detectHangs
+            captureUncaught = config.captureUncaught
 
             buffer = EventBuffer()
             circuitBreaker = CircuitBreaker()
@@ -214,11 +303,16 @@ object Trackless {
             enabled.set(config.enabled)
 
             debug("configured — env=${environment.value} endpoint=$endpoint flush=${flushIntervalSeconds}s")
+            if (config.launchThresholdSeconds != null && validThreshold == null) {
+                warn("launchThresholdSeconds is not a positive number — trackless.launch is sent without a threshold")
+            }
 
             if (enabled.get()) {
                 startPeriodicFlush()
                 registerLifecycleCallbacks()
                 startNewSession()
+                enableHangDetectionIfWanted()
+                installUncaughtHandlerIfWanted()
             }
         } catch (_: Throwable) {
             // Configure never throws
@@ -299,6 +393,10 @@ object Trackless {
      * @param name Event name for this measurement
      * @param durationSeconds Duration in seconds (e.g., 0.342 for 342ms)
      * @param thresholdSeconds Optional threshold in seconds. Creates a separate row per name/threshold combo.
+     *
+     * Names starting with `trackless.` are reserved for the metrics the SDK
+     * measures itself (`trackless.launch`, `trackless.hang`). Passing one logs
+     * a warning once per process; the measurement is still sent.
      */
     fun performance(name: String, durationSeconds: Double, thresholdSeconds: Double? = null) {
         if (!canRecord()) return
@@ -312,8 +410,281 @@ object Trackless {
                 threshold = thresholdSeconds,
             )
         ) ?: return
+        warnIfReserved(recorded.name)
         sessionManager.recordActivity()
         debug("performance — ${recorded.name} duration=${durationSeconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""}")
+    }
+
+    // ─── Timers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Start a timer for a performance measurement.
+     *
+     * The name is normalized here, exactly as [performance] normalizes its
+     * name, so `stopTimer("Checkout")` closes `startTimer("checkout")`. A name
+     * normalization rejects is ignored with the usual warning. Starting a name
+     * that is already open restarts it. At most 50 timers are open at once; a
+     * start past that is ignored, with one warning per session.
+     *
+     * Open timers live in memory only. **Session end discards every open
+     * timer** — the session ends when the app's last activity stops — as do
+     * `setEnabled(false)`, a [configure] with changed settings and [destroy],
+     * so a timer never measures time the app was in the background.
+     *
+     * Elapsed time comes from `SystemClock.elapsedRealtime()`. Safe to call
+     * from any thread.
+     */
+    fun startTimer(name: String) {
+        try {
+            val normalized = normalizeName(name) ?: return
+            warnIfReserved(normalized)
+            val result = timers.start(normalized)
+            if (result is OpenTimers.StartResult.CapReached && result.shouldWarn) {
+                warn(
+                    "timer \"$normalized\" not started — ${OpenTimers.MAX_OPEN} timers are already " +
+                        "open (logged once per session)"
+                )
+            }
+        } catch (_: Throwable) {
+            // Never throws
+        }
+    }
+
+    /**
+     * Stop the timer [name] and send its elapsed time, in seconds, as
+     * `performance(name, elapsed, thresholdSeconds)`.
+     *
+     * Does nothing when no timer of that name is open: never started, already
+     * stopped or cancelled, or discarded when the session ended. An elapsed
+     * time below zero or above a day is dropped.
+     */
+    fun stopTimer(name: String, thresholdSeconds: Double? = null) {
+        try {
+            val normalized = FeatureValidator.normalize(name) ?: return
+            val elapsed = timers.stop(normalized) ?: return
+            recordTimer(normalized, elapsed, thresholdSeconds)
+        } catch (_: Throwable) {
+            // Never throws
+        }
+    }
+
+    /**
+     * Drop the timer [name] without sending anything — the operation was
+     * abandoned, or failed in a way its duration should not describe.
+     */
+    fun cancelTimer(name: String) {
+        try {
+            val normalized = FeatureValidator.normalize(name) ?: return
+            timers.cancel(normalized)
+        } catch (_: Throwable) {
+            // Never throws
+        }
+    }
+
+    /**
+     * Time [block] and send its duration as a performance measurement,
+     * returning the block's value.
+     *
+     * The measurement is sent **only when [block] completes normally**. If it
+     * throws, nothing is sent and the exception propagates unchanged; a
+     * non-local `return` out of the block sends nothing either. Nothing is sent
+     * when the session ended while the block ran. `measure` does not use the
+     * open-timer map, so it never counts toward the 50-timer cap.
+     *
+     * ```kotlin
+     * val rows = Trackless.measure("csv_parse", thresholdSeconds = 0.5) {
+     *     parser.parse(file)
+     * }
+     * ```
+     */
+    inline fun <T> measure(name: String, thresholdSeconds: Double? = null, block: () -> T): T {
+        val start = measureStart()
+        val result = block()
+        measureEnd(name, start, thresholdSeconds)
+        return result
+    }
+
+    @PublishedApi
+    internal fun measureStart(): TimerStart? = try {
+        timers.mark()
+    } catch (_: Throwable) {
+        null
+    }
+
+    @PublishedApi
+    internal fun measureEnd(name: String, start: TimerStart?, thresholdSeconds: Double?) {
+        try {
+            if (start == null) return
+            val elapsed = timers.elapsedSince(start) ?: return
+            val normalized = normalizeName(name) ?: return
+            warnIfReserved(normalized)
+            recordTimer(normalized, elapsed, thresholdSeconds)
+        } catch (_: Throwable) {
+            // Never throws
+        }
+    }
+
+    /**
+     * The send behind [stopTimer] and [measure]: [performance] with an elapsed
+     * time the SDK measured, under a name that is already normalized.
+     */
+    private fun recordTimer(normalizedName: String, elapsedSeconds: Double, thresholdSeconds: Double?) {
+        if (!canRecord()) return
+        if (elapsedSeconds < 0 || elapsedSeconds > OpenTimers.MAX_ELAPSED_SECONDS) {
+            warn(
+                "dropped performance \"$normalizedName\" — timer elapsed time ${elapsedSeconds}s is " +
+                    "outside 0–${OpenTimers.MAX_ELAPSED_SECONDS.toLong()}s"
+            )
+            return
+        }
+        if (thresholdSeconds != null && thresholdSeconds <= 0) return
+        addToBuffer(
+            TracklessEvent(
+                type = EventType.PERFORMANCE,
+                name = normalizedName,
+                duration = elapsedSeconds,
+                threshold = thresholdSeconds,
+            )
+        )
+        flushIfOverThreshold()
+        sessionManager.recordActivity()
+        debug("performance — $normalizedName duration=${elapsedSeconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""} (timer)")
+    }
+
+    // ─── Reserved names, launch time and hangs ────────────────────────────────
+
+    /**
+     * Warn once per process when a developer's normalized name has the reserved
+     * prefix. [kind] names the call in the message: `performance`, `error` or
+     * `info`.
+     */
+    private fun warnIfReserved(normalizedName: String, kind: String = "performance") {
+        if (!normalizedName.startsWith(RESERVED_NAME_PREFIX)) return
+        if (reservedPrefixWarned.getAndSet(true)) return
+        warn(
+            "$kind name \"$normalizedName\" starts with \"$RESERVED_NAME_PREFIX\", which is " +
+                "reserved for names the SDK sends itself — sent anyway (logged once)"
+        )
+    }
+
+    /** Recording, without the pre-configure warning [canRecord] logs. */
+    private fun isRecording(): Boolean = enabled.get() && !destroyed.get() && configured.get()
+
+    /**
+     * A resumed Activity: feed the launch probe, and wait for the Activity's
+     * first frame while the probe is waiting for one.
+     */
+    private fun launchActivityResumed(activity: Activity) {
+        if (!launchProbe.onActivityResumed()) return
+        firstFrameWaiter(activity) {
+            if (launchProbe.onFirstFrame()) deliverLaunch()
+        }
+    }
+
+    /**
+     * Send the launch time the probe measured, once — only while recording
+     * with `measureLaunch` on. A launch measured while recording is disabled,
+     * or after a reconfigure turned the option off, is dropped.
+     */
+    private fun deliverLaunch() {
+        val seconds = launchProbe.takeMeasurement() ?: return
+        if (!isRecording() || !measureLaunch) return
+        recordSdkMetric(LAUNCH_METRIC, seconds, launchThresholdSeconds)
+    }
+
+    /** Switch the watchdog on when `detectHangs` is set; it starts at the next resumed Activity. */
+    private fun enableHangDetectionIfWanted() {
+        if (!detectHangs) return
+        hangWatchdog.enable { seconds ->
+            if (isRecording() && detectHangs) recordSdkMetric(HANG_METRIC, seconds, null)
+        }
+    }
+
+    /**
+     * Buffer one metric the SDK measured itself. Same bounds as a timer; no
+     * reserved-name warning, and no session activity — it describes the app,
+     * not anything the user did.
+     */
+    private fun recordSdkMetric(name: String, seconds: Double, thresholdSeconds: Double?) {
+        try {
+            if (seconds < 0 || seconds > OpenTimers.MAX_ELAPSED_SECONDS) {
+                warn(
+                    "dropped performance \"$name\" — measured ${seconds}s is outside " +
+                        "0–${OpenTimers.MAX_ELAPSED_SECONDS.toLong()}s"
+                )
+                return
+            }
+            addToBuffer(
+                TracklessEvent(
+                    type = EventType.PERFORMANCE,
+                    name = name,
+                    duration = seconds,
+                    threshold = thresholdSeconds,
+                )
+            )
+            flushIfOverThreshold()
+            debug("performance — $name duration=${seconds}s${if (thresholdSeconds != null) " threshold=${thresholdSeconds}s" else ""} (SDK)")
+        } catch (_: Throwable) {
+            // Never throws
+        }
+    }
+
+    // ─── Uncaught exceptions ──────────────────────────────────────────────────
+
+    /**
+     * Install the uncaught-exception handler when `captureUncaught` is set. Once
+     * per process: later calls, and a later configure that turns the option
+     * off, leave it in place, and it then only forwards.
+     */
+    private fun installUncaughtHandlerIfWanted() {
+        if (!captureUncaught) return
+        uncaughtCapture.installOnce(::recordUncaught)
+    }
+
+    /**
+     * Runs on the crashing thread, before the previous handler. With capture on
+     * and recording enabled, it adds `error("trackless.uncaught", code: <class
+     * name>)` and the session's end to the buffer, hands a flush of the whole
+     * buffer to the flush thread (the crashing thread is often main, where a
+     * send throws) and waits for it at most [UNCAUGHT_SEND_CAP_MS]. A failed or
+     * slow send is dropped; nothing is kept for a later launch.
+     *
+     * Only the throwable's class name is read: never its message, cause chain
+     * or stack trace, and nothing about the thread.
+     */
+    private fun recordUncaught(throwable: Throwable) {
+        if (!isRecording() || !captureUncaught) return
+        val code = FeatureValidator.normalize(throwable.javaClass.name) ?: UNCAUGHT_UNKNOWN_CODE
+        // The SDK's own send: no reserved-name warning, and no session activity —
+        // it describes the app, not anything the user did.
+        val isFirstOccurrence = errorTracker.firstOccurrence(UNCAUGHT_ERROR)
+        addToBuffer(
+            TracklessEvent(
+                type = EventType.ERROR,
+                name = UNCAUGHT_ERROR,
+                severity = ErrorSeverity.ERROR,
+                code = code,
+                firstOccurrences = if (isFirstOccurrence) 1 else null,
+            )
+        )
+        debug("error — $UNCAUGHT_ERROR code=$code (uncaught)")
+        endCurrentSession()
+
+        // Captured without the lock: the thread holding it may be the one
+        // that is stuck, and the process is about to end either way.
+        val target = FlushTarget(buffer, circuitBreaker, endpoint, apiKey, environment, context)
+        if (target.buffer.isEmpty) return
+        val done = CountDownLatch(1)
+        submitTask {
+            try {
+                flushTo(target)
+            } finally {
+                done.countDown()
+            }
+        }
+        if (!uncaughtCapture.sendWait.await(done, UNCAUGHT_SEND_CAP_MS)) {
+            debug("uncaught — send not finished after ${UNCAUGHT_SEND_CAP_MS}ms, handing over")
+        }
     }
 
     /**
@@ -377,6 +748,7 @@ object Trackless {
         if (!canRecord()) return
         val normalizedName = normalizeName(name) ?: return
         val stored = storedSeverity(severity)
+        warnIfReserved(normalizedName, stored.value)
         val normalizedCode = code?.takeIf { it.isNotEmpty() }?.let { FeatureValidator.normalize(it) }
         val isFirstOccurrence = errorTracker.firstOccurrence(normalizedName)
         addToBuffer(
@@ -418,6 +790,7 @@ object Trackless {
             debug("setEnabled — $isEnabled")
             enabled.set(isEnabled)
             if (!isEnabled) {
+                timers.discardAll()
                 buffer.clear()
                 sessionManager.destroy()
                 funnelTracker.clear()
@@ -425,10 +798,13 @@ object Trackless {
                 errorTracker.clear()
                 stopPeriodicFlush()
                 unregisterLifecycleCallbacks()
+                hangWatchdog.disable()
             } else if (!destroyed.get() && configured.get()) {
                 startPeriodicFlush()
                 registerLifecycleCallbacks()
                 startNewSession()
+                enableHangDetectionIfWanted()
+                installUncaughtHandlerIfWanted()
             }
         } catch (_: Throwable) {
             // Never throws
@@ -590,6 +966,7 @@ object Trackless {
     private fun retireCurrentConfiguration() {
         endCurrentSession()
         unregisterLifecycleCallbacks()
+        hangWatchdog.disable()
         val target = currentFlushTarget()
 
         flushFuture?.cancel(false)
@@ -711,6 +1088,9 @@ object Trackless {
     }
 
     private fun endCurrentSession() {
+        // Before the return: a reconfigure or destroy() after setEnabled(false)
+        // has no session to end, but may still hold timers started since.
+        timers.discardAll()
         val result = sessionManager.end() ?: return
         funnelTracker.clear()
         featureTracker.clear()
@@ -795,16 +1175,37 @@ object Trackless {
 
             lifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
                 override fun onActivityStarted(activity: Activity) {
-                    val count = activeActivityCount.incrementAndGet()
-                    if (count == 1) {
-                        // App is coming to the foreground — start new session
+                    startedActivities.add(activity)
+                    if (startedActivities.size == 1) {
+                        // App is coming to the foreground — start a new session.
+                        // A no-op when one is already open (a configure() before
+                        // the first Activity, or a rotation that kept it).
                         startNewSession()
                     }
                 }
 
+                override fun onActivityResumed(activity: Activity) {
+                    try {
+                        launchActivityResumed(activity)
+                        hangWatchdog.appBecameActive()
+                    } catch (_: Throwable) {
+                        // Never throws into the host
+                    }
+                }
+
+                override fun onActivityPaused(activity: Activity) {
+                    launchProbe.onActivityPausedOrStopped()
+                }
+
                 override fun onActivityStopped(activity: Activity) {
-                    val count = activeActivityCount.decrementAndGet()
-                    if (count <= 0) {
+                    launchProbe.onActivityPausedOrStopped()
+                    startedActivities.remove(activity)
+                    // A rotation stops the old instance before the new one
+                    // starts; that is not the app leaving the screen.
+                    if (startedActivities.isEmpty() && !activity.isChangingConfigurations) {
+                        // On the main thread, before the hand-off: the watchdog
+                        // stops now, and settles a hang the user left during.
+                        hangWatchdog.appResignedActive()
                         // App is now in the background — end session and flush
                         try {
                             scheduler?.submit {
@@ -822,8 +1223,6 @@ object Trackless {
                 }
 
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
-                override fun onActivityResumed(activity: Activity) {}
-                override fun onActivityPaused(activity: Activity) {}
                 override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
                 override fun onActivityDestroyed(activity: Activity) {}
             }
@@ -842,7 +1241,7 @@ object Trackless {
                 app.unregisterActivityLifecycleCallbacks(it)
             }
             lifecycleCallbacks = null
-            activeActivityCount.set(0)
+            startedActivities.clear()
         } catch (_: Throwable) {
             // Never throws
         }
@@ -854,6 +1253,62 @@ object Trackless {
     internal fun replaceBufferForTesting(maxItems: Int) {
         buffer = EventBuffer(maxItems)
     }
+
+    /**
+     * Replace the open timers with a set reading [clock] (milliseconds).
+     * `SystemClock` returns 0 in JVM unit tests.
+     */
+    internal fun replaceTimerClockForTesting(clock: () -> Long) {
+        timers = OpenTimers(clock)
+    }
+
+    /**
+     * Replace the launch probe with one reading [processStartMs] and [clock]
+     * (milliseconds) and this process's importance from [importance], and the
+     * first-frame wait with [frameWaiter].
+     */
+    internal fun replaceLaunchProbeForTesting(
+        processStartMs: () -> Long,
+        clock: () -> Long,
+        importance: () -> Int?,
+        frameWaiter: (Activity, () -> Unit) -> Unit,
+    ) {
+        launchProbe = LaunchProbe(processStartMs, clock, importance)
+        firstFrameWaiter = frameWaiter
+    }
+
+    /** Replace the hang watchdog with one on [scheduler] and [clock] (milliseconds). */
+    internal fun replaceHangWatchdogForTesting(scheduler: WatchdogScheduler, clock: () -> Long) {
+        hangWatchdog.disable()
+        hangWatchdog = HangWatchdog(scheduler, clock)
+    }
+
+    /**
+     * Replace the uncaught-exception hook with one installing into [slot] and
+     * waiting on its send through [sendWait]. The new hook is not installed
+     * until a configure with `captureUncaught` asks for it.
+     */
+    internal fun replaceUncaughtCaptureForTesting(
+        slot: DefaultHandlerSlot,
+        sendWait: UncaughtSendWait = UncaughtCapture().sendWait,
+    ) {
+        uncaughtCapture = UncaughtCapture(slot, sendWait)
+    }
+
+    /** Whether the uncaught-exception handler is installed, for testing. */
+    internal val uncaughtHandlerInstalledForTesting: Boolean
+        get() = uncaughtCapture.isInstalled
+
+    /** The hang watchdog, for testing. */
+    internal val hangWatchdogForTesting: HangWatchdog
+        get() = hangWatchdog
+
+    /** Whether the launch probe is still waiting, for testing. */
+    internal val launchProbeWaitingForTesting: Boolean
+        get() = launchProbe.isWaiting
+
+    /** Number of open timers for testing. */
+    internal fun openTimerCountForTesting(): Int = timers.count
 
     /**
      * Current buffer size for testing.
@@ -898,6 +1353,19 @@ object Trackless {
             funnelTracker = FunnelTracker()
             featureTracker = FeatureTracker()
             errorTracker = ErrorTracker()
+            timers = OpenTimers()
+            hangWatchdog.disable()
+            hangWatchdog = HangWatchdog()
+            launchProbe = LaunchProbe()
+            firstFrameWaiter = FirstFrame::await
+            reservedPrefixWarned.set(false)
+            measureLaunch = false
+            launchThresholdSeconds = null
+            detectHangs = false
+            captureUncaught = false
+            // A fresh hook for the next test. One a test installed in the JVM's
+            // real slot stays there, forwarding, since nothing ever unhooks.
+            uncaughtCapture = UncaughtCapture()
             context = EventContext()
             apiKey = ""
             endpoint = ""

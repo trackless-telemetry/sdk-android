@@ -40,6 +40,10 @@ Trackless.view(name: String, detail: String? = null)
 Trackless.feature(name: String, detail: String? = null)
 Trackless.funnel(funnelName: String, stepIndex: Int, stepName: String)
 Trackless.performance(name: String, durationSeconds: Double, thresholdSeconds: Double? = null)
+Trackless.startTimer(name: String)
+Trackless.stopTimer(name: String, thresholdSeconds: Double? = null)  // sends performance(); no-op if not open
+Trackless.cancelTimer(name: String)                                  // drops it, sends nothing
+Trackless.measure<T>(name: String, thresholdSeconds: Double? = null, block: () -> T): T  // inline
 Trackless.error(name: String, code: String? = null)
 Trackless.info(name: String, detail: String? = null)
 Trackless.flush()
@@ -49,8 +53,40 @@ Trackless.destroy()
 
 `TracklessConfig(apiKey: String, endpoint = DEFAULT_ENDPOINT, environment: TracklessEnvironment? =
 null, enabled = true, onError: ((Throwable) -> Unit)? = null, flushIntervalSeconds = 60L,
-debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
+debugLogging = false, suppressWarnings = false, measureLaunch = false,
+launchThresholdSeconds: Double? = null, detectHangs = false, captureUncaught = false)` — only
+`apiKey` is required.
 `TracklessEnvironment`: `SANDBOX`, `PRODUCTION`.
+
+## Launch time and hangs (opt-in)
+
+- `measureLaunch = true` sends `trackless.launch` once per process: seconds from
+  `Process.getStartElapsedRealtime()` to the first frame of the first resumed Activity. A
+  `configure()` after an Activity has already resumed sends no launch time, which is one more
+  reason it belongs in `Application.onCreate`. A process that is not in the foreground when
+  `configure()` runs (started for a broadcast, job, service or provider, and opened later) sends
+  none; the SDK reads this process's own importance once to tell. A launch longer than 60
+  seconds is dropped. Do not hand-roll an `app_cold_start` metric alongside it.
+- `detectHangs = true` sends one `trackless.hang` sample (seconds) for each main-thread hang of
+  250 ms or more, from a watchdog that runs only while the app is in the foreground.
+- Both are **off by default**. Turning either on sends performance data: the app must declare
+  **App info and performance → Diagnostics** in its Play Data safety form. Say so to the
+  developer when you turn one on.
+- Names starting with `trackless.` are reserved for what the SDK sends itself. Never pass one to
+  `performance()`, `startTimer`, `measure`, `error()` or `info()` (the SDK warns once and sends
+  it anyway).
+
+## Uncaught exceptions (opt-in)
+
+- `captureUncaught = true` counts exceptions no code caught as
+  `error("trackless.uncaught", code = <exception class name>)`, e.g.
+  `java.lang.illegalstateexception`. No message, stack trace or thread is read.
+- It chains a default uncaught-exception handler in front of the existing one (the platform's,
+  or a crash reporter's), sends the count, the session end and the buffer within 1.5 s, and
+  always calls the previous handler. Do not write your own default handler to call `error()`.
+- Not counted: ANRs, native crashes. R8-obfuscated classes arrive under obfuscated names.
+- **Off by default.** Turning it on means declaring **App info and performance → Crash logs**
+  in the Play Data safety form. Say so to the developer when you turn it on.
 
 ## Errors and info
 
@@ -80,7 +116,9 @@ debugLogging = false, suppressWarnings = false)` — only `apiKey` is required.
   committed source.
 - Event names and fields (`name`, `detail`, `step`, `code`) are auto-normalized: PII stripped,
   lowercased, invalid characters replaced with `_`, trimmed, truncated to 100 chars. Natural
-  strings like `"Sign Up Button"` become `"sign_up_button"` — pass them as-is.
+  strings like `"Sign Up Button"` become `"sign_up_button"` — pass them as-is. A field containing
+  a UUID or a long hex ID is rejected whole, even with a prefix (`user-<uuid>`), so never build a
+  field from an identifier.
 - `performance()` takes **seconds**, not milliseconds or nanoseconds.
 - Environment auto-detects when not passed: `FLAG_DEBUGGABLE` → `SANDBOX`, else `PRODUCTION`.
 - App version and build number are auto-read from `PackageManager` (the app's own

@@ -8,6 +8,111 @@ import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 
 /**
+ * The cross-SDK normalization table: input, then what is stored, or null when it is rejected.
+ * field-normalization-parity.test.ts in the monorepo fails if these rows drift from its own.
+ */
+private val NORMALIZATION_PARITY_TABLE: List<Pair<String, String?>> = listOf(
+    "123e4567-e89b-12d3-a456-426614174000" to null,
+    "123E4567-E89B-12D3-A456-426614174000" to null,
+    "550e8400_e29b_41d4_a716_446655440000" to null,
+    "550e8400.e29b.41d4.a716.446655440000" to null,
+    "550e8400 e29b 41d4 a716 446655440000" to null,
+    "user-123e4567-e89b-12d3-a456-426614174000" to null,
+    "err.123e4567-e89b-12d3-a456-426614174000" to null,
+    "user-abcdefab-cdef-abcd-efab-cdefabcdefab" to null,
+    "abcdefab-cdef-abcd-efab-cdefabcdefab_retry" to null,
+    "checkout_flow_step_checkout_flow_step_checkout_flow_step_checkout_flow_step_checkout_flow_step_123e4567-e89b-12d3-a456-426614174000" to null,
+    "507f1f77bcf86cd799439011" to null,
+    "550e8400e29b41d4a716446655440000" to null,
+    "tok_507f1f77bcf86cd799439011" to null,
+    "tok-abcdefabcdefabcdefabcdef" to null,
+    "tok_550e8400e29b41d4a716446655440000" to null,
+    "tok-abcdefabcdefabcdefabcde" to "tok-abcdefabcdefabcdefabcde",
+    "abcdefabcdefabcde" to null,
+    "1234567890123" to null,
+    "123e4567-e89b-12d3-a_redacted" to null,
+    "550e8400e29b41d4a_redacted" to null,
+    "user-6fe8b8e2-0bd_redacted_aeb89f4d624" to null,
+    "tok_94efbda267a_redacted_a9061dd2" to null,
+    "deadbeef-555-123-4567" to null,
+    "555-123-4567" to "redacted",
+    "+1 (555) 123-4567" to "redacted",
+    "call 555-123-4567" to "call_redacted",
+    "err.555-123-4567" to "err._redacted",
+    "user@example.com" to "redacted",
+    "signup_failed user@example.com" to "signup_failed_redacted",
+    "123-45-6789" to "redacted",
+    "settings.theme" to "settings.theme",
+    "err_001" to "err_001",
+    "java.lang.illegalstateexception" to "java.lang.illegalstateexception",
+    "java.lang.IllegalStateException" to "java.lang.illegalstateexception",
+    "Sign Up Button" to "sign_up_button",
+    "cafe_fade_added" to "cafe_fade_added",
+    "add_face_redacted" to "add_face_redacted",
+    "123e4567" to "123e4567",
+    "e10b90f6--b4f5--4c42--b4cf--317b5d116211" to null,
+    "c2008c33__92bc__48b7__b93f__c0a61d76418a" to null,
+    "1cae8043 - 4d24 - 4e22 - 956f - 698a933e3b5b" to null,
+    "9b7ee1c2-9299-4ec0-af1e-c102392226c" to null,
+    "7b59744c-d299-44ad-b30d" to null,
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.y" to "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "deadbeefdead_555-123-4567" to null,
+    "555-123-4567_12345678" to null,
+    "trackless.uncaught" to "trackless.uncaught",
+    "NSInvalidArgumentException" to "nsinvalidargumentexception",
+    "TypeError" to "typeerror",
+    "com.example.app.Checkout\$PaymentException" to "com.example.app.checkout_paymentexception",
+    "!!!" to null,
+    // An address may hold non-ASCII characters, but not a Unicode space; the rest of the value stays.
+    "éric@example.com" to "redacted",
+    "日本user@example.com" to "redacted",
+    "user@example.comé" to "redacted",
+    "signup é user@example.com" to "signup_redacted",
+    "us\u0301er@example.com" to "redacted",
+    "uſer@example.com" to "redacted",
+    "\u212Aevin@example.com" to "redacted",
+    "user@exämple.com" to "redacted",
+    "user@\u0301example.com" to "redacted",
+    "josé@example.com" to "redacted",
+    "user＠example.com" to "user_example.com",
+    "user@localhost" to "user_localhost",
+    "user@example.c0m" to "user_example.c0m",
+    "日本語@example.com" to "redacted",
+    "user@example.みんな" to "redacted",
+    "user@example.com_x" to "redacted__x",
+    "user@example.com2" to "redacted_2",
+    "a@b.com_c@d.com" to "redacted_redacted",
+    "login失敗user@example.com" to "redacted",
+    "clicked\u3000user@example.com" to "clicked_redacted",
+    "user@example.com\u00A0clicked" to "redacted_clicked",
+    "abc😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀@example.com" to "redacted",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com" to "xxxxxx_redacted",
+    "a@b.com-c@d.com" to "redacted_redacted",
+    "x .foo@example.com" to "x_redacted",
+    "é123456789" to "redacted",
+    "123456789é" to "redacted",
+    "日本123-45-6789" to "redacted",
+    "123-45-6789é" to "redacted",
+    "é555-123-4567" to "redacted",
+    // Non-ASCII digits are not digits to the patterns, and sanitizing removes them.
+    "٠١٢٣٤٥٦٧٨" to null,
+    "１２３４５６７８９" to null,
+    "𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗" to null,
+    "٠١٢-٣٤-٥٦٧٨" to "-_-",
+    "call ٠١٢٣٤٥٦٧٨" to "call",
+    "12345٠67890" to "12345_67890",
+    "٠123456789" to "redacted",
+    // Unicode spaces separate a phone number; other invisible characters do not.
+    "555\u00A0123\u00A04567" to "redacted",
+    "555\uFEFF123\uFEFF4567" to "redacted",
+    "555\u202F123\u202F4567" to "redacted",
+    "555\u3000123\u30004567" to "redacted",
+    "555\u000B123\u000B4567" to "redacted",
+    "555\u0085123\u00854567" to "555_123_4567",
+    "555\u200B123\u200B4567" to "555_123_4567",
+)
+
+/**
  * Tests for [FeatureValidator].
  *
  * Covers:
@@ -250,5 +355,26 @@ class FeatureValidatorTest {
         assertEquals("export_clicked", FeatureValidator.normalize("export_clicked"))
         assertEquals("theme.dark", FeatureValidator.normalize("theme.dark"))
         assertEquals("my-feature", FeatureValidator.normalize("my-feature"))
+    }
+
+    @Test
+    @DisplayName("The email pattern's limits keep a long value cheap")
+    fun longValues() {
+        for (value in listOf(
+            "a".repeat(200_000),
+            "日".repeat(200_000),
+            "a@" + "b".repeat(200_000),
+            "a@b".repeat(70_000),
+        )) {
+            assertEquals(value, FeatureValidator.stripPII(value))
+        }
+    }
+
+    @Test
+    @DisplayName("Normalization matches the cross-SDK table")
+    fun normalizationParity() {
+        for ((input, stored) in NORMALIZATION_PARITY_TABLE) {
+            assertEquals(stored, FeatureValidator.normalize(input), "input: $input")
+        }
     }
 }

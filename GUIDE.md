@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.5.1")
+    implementation("com.tracklesstelemetry:sdk-android:0.6.0")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.5.1'
+    implementation 'com.tracklesstelemetry:sdk-android:0.6.0'
 }
 ```
 
@@ -146,6 +146,10 @@ TracklessConfig(
     flushIntervalSeconds = 60L,            // Optional — flush interval in seconds
     debugLogging = true,                   // Optional — enable debug logging for happy-path events
     suppressWarnings = false,              // Optional — suppress warning and error logging
+    measureLaunch = true,                  // Optional — send trackless.launch once per launch (off by default)
+    launchThresholdSeconds = 2.0,          // Optional — threshold for trackless.launch
+    detectHangs = true,                    // Optional — send trackless.hang for each hang ≥ 250 ms (off by default)
+    captureUncaught = true,                // Optional — count uncaught exceptions as trackless.uncaught (off by default)
 )
 ```
 
@@ -159,6 +163,12 @@ TracklessConfig(
 | `flushIntervalSeconds` | `Long`                     | `60`                                   | Flush interval in seconds                          |
 | `debugLogging`         | `Boolean`                  | `false`                                | Enable debug logging for happy-path events         |
 | `suppressWarnings`     | `Boolean`                  | `false`                                | Suppress warning and error logging                 |
+| `measureLaunch`        | `Boolean`                  | `false`                                | Send the launch time as `trackless.launch`, once per process — see [Launch time and hangs](#launch-time-and-hangs-opt-in) |
+| `launchThresholdSeconds` | `Double?`                | `null`                                 | Threshold for `trackless.launch`. A value that is not a positive number is ignored, with a warning |
+| `detectHangs`          | `Boolean`                  | `false`                                | Send each main-thread hang of 250 ms or more as `trackless.hang` — see [Launch time and hangs](#launch-time-and-hangs-opt-in) |
+| `captureUncaught`      | `Boolean`                  | `false`                                | Count exceptions no code caught as the error `trackless.uncaught`, by class name — see [Uncaught exceptions](#uncaught-exceptions-opt-in) |
+
+Changing `measureLaunch`, `launchThresholdSeconds`, `detectHangs` or `captureUncaught` in a repeat `configure()` counts as changed settings, like any other option: the current session ends and a new one starts.
 
 **Environment auto-detection:** If the app has `FLAG_DEBUGGABLE` set, environment defaults to `SANDBOX`. Otherwise `PRODUCTION`. Override by passing `environment` explicitly.
 
@@ -314,9 +324,6 @@ Trackless.performance(
     durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0
 )
 
-// App startup time (measure in Application.onCreate)
-Trackless.performance("app_cold_start", durationSeconds = coldStartDurationSeconds)
-
 // With threshold — track how many measurements exceed 2 seconds
 Trackless.performance(
     "api_user_profile",
@@ -325,11 +332,72 @@ Trackless.performance(
 )
 ```
 
-**When to use:** API latency, database queries, image processing, app startup — any timing you want percentile distributions for (p50/p90/p99).
+**When to use:** API latency, database queries, image processing — any timing you want percentile distributions for (p50/p90/p99). For launch time and main-thread hangs, turn on the SDK's own metrics instead of timing them yourself ([Launch time and hangs](#launch-time-and-hangs-opt-in)).
+
+**Reserved names:** names starting with `trackless.` are reserved for the metrics the SDK measures itself. `performance()`, `startTimer` and `measure` log a warning once per process when given one, and send it anyway. The same holds for `error()` and `info()` (`trackless.uncaught`); one warning covers all of them.
 
 **Threshold:** The optional `thresholdSeconds` parameter defines a performance threshold. Each name/threshold combination is tracked separately, with breach counts shown in the dashboard.
 
 **Important:** Duration is in **seconds** (not milliseconds or nanoseconds). Divide `System.nanoTime()` differences by `1_000_000_000.0`. Threshold must be > 0.
+
+#### Timers and `measure`
+
+When the start and end of an operation are in different places, let the SDK keep the clock:
+
+```kotlin
+Trackless.startTimer("checkout")
+// ... later, anywhere in the app, on any thread
+Trackless.stopTimer("checkout", thresholdSeconds = 2.0)  // sends performance("checkout", elapsed, 2.0)
+Trackless.cancelTimer("checkout")                        // abandoned — drops it, sends nothing
+```
+
+When the operation is one block, `measure` times it and returns its value:
+
+```kotlin
+val rows = Trackless.measure("csv_parse", thresholdSeconds = 0.5) {
+    parser.parse(file)
+}
+```
+
+- The name is normalized at `startTimer`, like every event name, so `stopTimer("Checkout")` closes `startTimer("checkout")`.
+- `stopTimer` for a name with no open timer does nothing. Starting a name that is already open restarts it.
+- At most **50** timers are open at once; a start past that is ignored, with one warning per session.
+- **Session end discards every open timer** (the app's last activity stopping), as do `setEnabled(false)`, a `configure()` with changed settings and `destroy()`. A timer never measures time the app spent in the background, so a `stopTimer` after the user left mid-checkout sends nothing.
+- `measure` is `inline`, so it works around `suspend` calls inside a coroutine. It sends only when the block **completes normally**: if it throws, nothing is sent and the exception propagates; a non-local `return` out of the block sends nothing either. It sends nothing if the session ended while the block ran, and does not count toward the 50-timer cap.
+- Elapsed time comes from `SystemClock.elapsedRealtime()`. An elapsed time below zero or above a day is dropped.
+- Timers live in memory only and are never written to storage.
+
+#### Launch time and hangs (opt-in)
+
+Two metrics the SDK can measure for you. Both are **off by default**; turn them on in `TracklessConfig`:
+
+```kotlin
+Trackless.configure(
+    context = this,
+    config = TracklessConfig(
+        apiKey = BuildConfig.TRACKLESS_API_KEY,
+        measureLaunch = true,              // trackless.launch
+        launchThresholdSeconds = 2.0,      // optional threshold for it
+        detectHangs = true,                // trackless.hang
+    ),
+)
+```
+
+| Metric | What one sample is | Threshold |
+|--------|--------------------|-----------|
+| `trackless.launch` | Seconds from `Process.getStartElapsedRealtime()` (when the process started) to the **first frame of the first resumed Activity**. Sent once per process | `launchThresholdSeconds`, when set |
+| `trackless.hang` | Seconds the main thread was unresponsive, for each hang of **250 ms or more**, sent when the main thread recovers | None — every sample is already over 250 ms |
+
+- **Call `configure()` in `Application.onCreate`** (rule 3 in §0), before any Activity resumes. A `configure()` that runs after an Activity has already resumed sends **no** launch time for that process: the next resume would be a return to the app, not a launch. A configure in the first Activity's `onCreate` still measures.
+- **One launch per process.** Returning from the background, or opening a second Activity, is not a launch. The first frame is detected with the decor view's `ViewTreeObserver.OnDrawListener`; an Activity that finishes before it draws (a trampoline or splash router) hands over to the next Activity's first frame. A launch measured while recording is disabled is not sent.
+- **A process the system started for something else** (a broadcast, a job, a push, a content provider) and that the user opens later sends **no** launch time. When `configure()` arms the probe, the SDK reads this process's own importance once with `ActivityManager.getMyMemoryState()` (public, no permission). A launcher or notification-tap cold start runs `Application.onCreate` with the process in the foreground (`IMPORTANCE_FOREGROUND`), so the launch is measured. For a background start it is not, and nothing is measured that process. This is one more reason `configure()` belongs in `Application.onCreate`. If the importance cannot be read, the launch is measured and the 60-second cap below still applies.
+- **A launch longer than 60 seconds is dropped, not clipped.** Nothing is sent for that process, as for a negative value.
+- **The hang watchdog runs only while the app is in the foreground.** Every 250 ms a background `HandlerThread` posts a no-op to the main `Looper` and measures how long it waited. It stops when the last Activity stops and starts again when an Activity resumes, so it costs no wake-ups in the background. It never blocks the main thread and allocates nothing per tick. A debugger pause looks like a hang, but debuggable builds report as `sandbox`, so it never reaches production numbers.
+- Both read `SystemClock.elapsedRealtime()`, and the launch probe also reads this process's current importance once. Nothing is stored on the device or read about other or earlier processes. A hang outside 0 to 86,400 seconds is dropped.
+- Neither counts toward the session's depth: they describe the app, not something the user did.
+- Each platform measures launch its own way, and the performance page merges every platform unless you filter it, so filter by platform before comparing launch times.
+
+**Opting in means declaring performance data.** An app that never called `performance()` has not declared **App info and performance → Diagnostics** for performance metrics in its Play Data safety form. Turning on `measureLaunch` or `detectHangs` sends performance metrics, so add that row ([Google Play Data Safety](#google-play-data-safety)) before you ship it. That is why both are off by default.
 
 ### Errors
 
@@ -354,6 +422,31 @@ try {
 **When to use:** Caught exceptions, failed network requests, validation errors — any error you want to trend over time. Every `error()` call counts toward errors per session and toward every alert.
 
 **Session reach (automatic):** The first occurrence of each name within a session is automatically flagged (as an aggregate first-occurrence count) so the dashboard can report **session reach** — the share of sessions that reported it at least once, as distinct from the raw volume a single looping session can inflate. This is fully automatic; call `error(...)` exactly as shown. Names are normalized before the check, so `Trackless.error("Payment Failed")` and `Trackless.error("payment_failed")` count as the same error, and repeated occurrences within a session — including different `code` values — count once toward reach. The tracking is in-memory only and resets when the session ends, consistent with the no-cross-session-linking guarantee.
+
+#### Uncaught exceptions (opt-in)
+
+The SDK can count the exceptions no code caught. It is **off by default**; turn it on in `TracklessConfig`:
+
+```kotlin
+Trackless.configure(
+    context = this,
+    config = TracklessConfig(
+        apiKey = BuildConfig.TRACKLESS_API_KEY,
+        captureUncaught = true,            // error("trackless.uncaught", code = <exception class>)
+    ),
+)
+```
+
+Each uncaught exception is sent as an ordinary error, `trackless.uncaught`, with the exception's class name as its code, normalized like any code: `java.lang.IllegalStateException` arrives as `java.lang.illegalstateexception`, and a class name normalization rejects (one that looks like an identifier, say) arrives as `unknown`, so the exception is still counted. It counts toward errors per session and every alert like any other `error()`, and the dashboard's **By code** breakdown shows the classes.
+
+- **Only the class name is read.** Never the message, the cause chain, the stack trace, the file or line, or anything about the thread.
+- **How it is sent.** `configure()` chains a default uncaught-exception handler (`Thread.setDefaultUncaughtExceptionHandler`) in front of the one already there — the platform's, or a crash reporter such as Crashlytics — once per process. When an exception reaches it, the SDK adds the error and the session's end to the buffer, hands a send of the whole buffer to its flush thread (the crashing thread is often the main thread, where a network call throws) and waits for it **at most 1.5 seconds**. Then it always calls the previous handler, whatever happened to the send, so the app crashes exactly as it would without Trackless. A send that fails or takes longer is dropped: nothing is written to the device for a later launch.
+- **It works alongside a crash reporter** in either order: each handler calls the one installed before it. A reporter that initializes before `Application.onCreate` (Crashlytics does) runs after Trackless, up to 1.5 seconds later.
+- With the option off, or recording disabled with `setEnabled(false)`, the handler passes every exception straight to the previous one and sends nothing. It stays installed once installed, because another library may have chained in front of it since.
+- **What it does not catch.** ANRs are not exceptions, and native (NDK) crashes never reach a Java handler, so neither is counted. Exceptions a thread handles with its own `Thread.UncaughtExceptionHandler`, or that a coroutine handler or framework catches, never become uncaught. With R8 or ProGuard on, your own exception classes arrive under their obfuscated names (`a.b.c`); platform classes such as `java.lang.IllegalStateException` keep theirs.
+- Never call `error()` or `info()` with a `trackless.` name yourself: the prefix is reserved, and the SDK warns once and sends it anyway.
+
+**Opting in means declaring Crash logs.** Google Play's Data safety form names the number of times an app crashed as crash log data. Turn `captureUncaught` on only after adding **App info and performance → Crash logs** to the form ([Google Play Data Safety](#google-play-data-safety)). That is why it is off by default.
 
 ### Info
 
@@ -434,12 +527,14 @@ All event fields (`name`, `detail`, `step`, `code`) are automatically normalized
 | **Trim** | Leading/trailing underscores and dots are removed — `...foo...` becomes `foo` |
 | **Collapse dots** | Consecutive dots are collapsed — `foo..bar` becomes `foo.bar` |
 | **Truncate** | Truncated to 100 characters |
-| **No identifiers** | UUIDs, long hex strings, and numeric-only strings >12 chars are rejected |
+| **No identifiers** | A UUID or 24+ hex characters anywhere in a field, a hex-only value >16 chars, and a numeric-only value >12 chars are rejected, checked before PII stripping as well as after |
 | **PII stripping** | Emails, phone numbers, and SSN patterns are stripped from all fields |
 
 **Valid characters after normalization:** Lowercase `a-z`, digits `0-9`, underscores `_`, hyphens `-`, dots `.`
 
 **Examples:** `"Sign Up Button"` → `"sign_up_button"`, `"ERR_001"` → `"err_001"`, `"Export!Clicked"` → `"export_clicked"`, `"Settings.Theme"` → `"settings.theme"`
+
+**Reserved prefix:** names starting with `trackless.` belong to what the SDK sends itself (`trackless.launch`, `trackless.hang`, `trackless.uncaught`). Passing one to `performance()`, `startTimer`, `measure`, `error()` or `info()` logs a warning once per process; it is still sent.
 
 ### Feature Grouping with Detail
 
@@ -711,12 +806,12 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **Nothing about this installation** — no install date, no install source. The SDK stores nothing on the device and reads nothing stored there
 - **No cross-session linking** — session state is in-memory only
 - **No data sent to third parties** — events go only to your configured endpoint
-- **No stack traces, crash logs, or error messages** — error and info tracking uses only developer-defined names and codes
-- **No individual performance measurements stored** — durations are aggregated server-side into statistical digests (t-digest)
+- **No stack traces or error messages** — error and info tracking uses only developer-defined names and codes; with `captureUncaught` on, the SDK adds a count of uncaught exceptions by class name, and nothing else about them
+- **No performance measurement stored as its own record** — durations are aggregated server-side into statistical digests (t-digest); a row with very few samples approximates their values
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.5.1"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.6.0"`). All are coarse, non-identifying dimensions.
 
 Every one of them is either a runtime property the OS exposes to every app (OS version, device class, locale, language) or a constant compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). The SDK does not ask `PackageManager` when the app was installed or who installed it, so a release build cannot tell a store install from a sideload; it sends no distribution channel at all.
 
@@ -727,8 +822,9 @@ When completing the Data Safety section in Google Play Console, declare the foll
 | Category | Data Type | Why |
 |----------|-----------|-----|
 | App activity | App interactions | Feature counts, view counts, funnel steps |
-| App info and performance | Diagnostics | Error and info events (name, level, code) — not *Crash logs*, nothing here captures a crash |
-| App info and performance | Diagnostics | Performance metrics (duration digest — no individual measurements) |
+| App info and performance | Diagnostics | Error and info events (name, level, code) — not *Crash logs* unless `captureUncaught` is on |
+| App info and performance | Crash logs | **Only when `captureUncaught` is on**: a count of uncaught exceptions by class name, with no message or stack trace |
+| App info and performance | Diagnostics | Performance metrics (a duration digest, not individual records; a row with very few samples approximates their values), including `trackless.launch` and `trackless.hang` when `measureLaunch` or `detectHangs` is on |
 
 See [Section 22.7 of the SDK requirements](https://github.com/trackless-telemetry/platform/blob/main/docs/requirements/sdks.md#227-app-store-privacy-compliance-guidance) for full guidance.
 
