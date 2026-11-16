@@ -184,4 +184,24 @@ class ActivitySessionTest {
         leave(after)
         assertEquals(1 to 1, sessions())
     }
+
+    @Test
+    @DisplayName("Funnel steps on both sides of a session end are all sent")
+    fun funnelStepsAcrossSessionEndAreAllSent() {
+        configure()
+        val a = activity()
+        open(a)
+        Trackless.funnel("checkout", 0, "cart")
+        Trackless.funnel("checkout", 1, "payment")
+        leave(a) // ends session 1
+        open(a) // starts session 2
+        Trackless.funnel("checkout", 0, "cart")
+        Trackless.funnel("checkout", 1, "payment")
+        flushAndWait()
+
+        val order = synchronized(sent) { sent.flatMap { it.events } }
+            .filter { it.type == EventType.FUNNEL || (it.type == EventType.SESSION && it.name != "duration") }
+            .map { if (it.type == EventType.FUNNEL) "step${it.stepIndex}" else "session:${it.name}" }
+        assertEquals(listOf("session:start", "step0", "step1", "session:end", "session:start", "step0", "step1"), order)
+    }
 }

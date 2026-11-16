@@ -13,7 +13,7 @@ package com.tracklesstelemetry.sdk
  * one first-use — matching the reach metric's per-name semantics.
  *
  * The set lives in session state (not the event buffer): it must survive buffer
- * flushes and reset only at session end. Cleared exactly where [FunnelTracker]
+ * flushes and reset only at session end. Cleared exactly where [ErrorTracker]
  * clears.
  *
  * Thread-safe: all methods are synchronized.

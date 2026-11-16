@@ -24,22 +24,73 @@ import java.util.Locale
  */
 internal object ContextDetection {
 
-    private const val SDK_VERSION = "android/0.6.0"
+    private const val SDK_VERSION = "android/0.7.0"
+
+    /** Ingest's rule for `appVersion` and `buildNumber`. */
+    private val APP_VERSION_REGEX = Regex("^[a-zA-Z0-9._-]{1,50}$")
+
+    /** Ingest's rule for `osVersion`: one to three dot-separated numbers. */
+    private val OS_VERSION_REGEX = Regex("^[0-9]+(\\.[0-9]+){0,2}$")
+
+    /** A detected context, and the names of the fields left out of it. */
+    data class Detected(val context: EventContext, val omitted: List<String>)
 
     /**
      * Detect the full event context.
      */
-    fun detect(context: Context): EventContext {
-        return EventContext(
-            platform = "android",
-            osVersion = detectOsVersion(),
-            deviceClass = detectDeviceClass(context),
-            region = detectRegion(),
-            language = detectLanguage(),
-            appVersion = detectAppVersion(context),
-            buildNumber = detectBuildNumber(context),
-            sdkVersion = SDK_VERSION,
+    fun detect(context: Context): EventContext = detectReportingOmissions(context).context
+
+    /**
+     * [detect], plus the names of the fields left out because ingest would
+     * reject them (see [omitInvalid]).
+     */
+    fun detectReportingOmissions(context: Context): Detected {
+        return omitInvalid(
+            EventContext(
+                platform = "android",
+                osVersion = detectOsVersion(),
+                deviceClass = detectDeviceClass(context),
+                region = detectRegion(),
+                language = detectLanguage(),
+                appVersion = detectAppVersion(context),
+                buildNumber = detectBuildNumber(context),
+                sdkVersion = SDK_VERSION,
+            )
         )
+    }
+
+    /**
+     * Leave out any of `appVersion`, `buildNumber` and `osVersion` that ingest
+     * would reject. Ingest validates the whole payload, so one bad value (a
+     * `versionName` of `"1.0 beta"`) would cost the app every batch; without
+     * the field the batch is accepted and only that dimension is missing.
+     *
+     * Pure. [Detected.omitted] names the fields, never their values.
+     */
+    fun omitInvalid(context: EventContext): Detected {
+        val omitted = mutableListOf<String>()
+        fun keep(value: String?, field: String, pattern: Regex): String? {
+            if (value == null) return null
+            if (pattern.matches(value)) return value
+            omitted.add(field)
+            return null
+        }
+        val cleaned = context.copy(
+            appVersion = keep(context.appVersion, "appVersion", APP_VERSION_REGEX),
+            buildNumber = keep(context.buildNumber, "buildNumber", APP_VERSION_REGEX),
+            osVersion = keep(context.osVersion, "osVersion", OS_VERSION_REGEX),
+        )
+        return Detected(cleaned, omitted)
+    }
+
+    /** The warning for a field [omitInvalid] left out. Names the field only. */
+    fun omittedWarning(field: String): String {
+        if (field == "osVersion") {
+            return "osVersion could not be read as a version number — left out of every payload"
+        }
+        val source = if (field == "appVersion") "versionName" else "versionCode"
+        return "$field ($source) is not 1–50 letters, digits, \".\", \"_\" or \"-\" " +
+            "— left out of every payload"
     }
 
     /**

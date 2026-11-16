@@ -429,21 +429,65 @@ class TracklessClientTest {
     }
 
     @Test
-    @DisplayName("Funnel events deduplicate and include stepIndex")
-    fun funnelEventsDeduplicateAndIncludeStepIndex() {
+    @DisplayName("Funnel events include step and stepIndex")
+    fun funnelEventsIncludeStepIndex() {
         val payloadSlot = slot<EventPayload>()
         every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
 
         configure()
         Trackless.funnel("checkout", 0, "cart")
         Trackless.funnel("checkout", 1, "payment")
-        Trackless.funnel("checkout", 0, "cart") // duplicate — should be ignored
-
         flushAndWait()
 
         assertTrue(payloadSlot.isCaptured)
         val funnelEvents = payloadSlot.captured.events.filter { it.type == EventType.FUNNEL }
-        assertEquals(2, funnelEvents.size)
+        assertEquals(listOf("cart" to 0, "payment" to 1), funnelEvents.map { it.step to it.stepIndex })
+    }
+
+    @Test
+    @DisplayName("The same funnel step three times in one session sends three events and adds three to depth")
+    fun repeatedFunnelStepCountsEveryCall() {
+        val payloads = Collections.synchronizedList(mutableListOf<EventPayload>())
+        every { HttpClient.send(any(), any(), capture(payloads)) } returns SendResult(statusCode = 200)
+
+        configure()
+        repeat(3) { Trackless.funnel("breathing", 0, "start") }
+        destroyAndWait() // ends the session and flushes
+
+        val events = payloads.flatMap { it.events }
+        val funnelEvents = events.filter { it.type == EventType.FUNNEL }
+        assertEquals(3, funnelEvents.size)
+        funnelEvents.forEach {
+            assertEquals("breathing", it.name)
+            assertEquals("start", it.step)
+            assertEquals(0, it.stepIndex)
+        }
+        // Session depth is the number of recordActivity() calls: one per funnel call.
+        val end = events.single { it.type == EventType.SESSION && it.name == "end" }
+        assertEquals(3, end.stepIndex)
+    }
+
+    @Test
+    @DisplayName("No funnel event carries count, however often a step repeats")
+    fun funnelEventsNeverCarryCount() {
+        val payloadSlot = slot<EventPayload>()
+        every { HttpClient.send(any(), any(), capture(payloadSlot)) } returns SendResult(statusCode = 200)
+
+        configure()
+        repeat(5) { Trackless.funnel("checkout", 2, "confirm") }
+        Trackless.feature("export_clicked")
+        Trackless.feature("export_clicked")
+        flushAndWait()
+
+        val events = payloadSlot.captured.events
+        val funnelEvents = events.filter { it.type == EventType.FUNNEL }
+        assertEquals(5, funnelEvents.size)
+        funnelEvents.forEach {
+            assertEquals(null, it.count)
+            assertFalse(it.toJson().has("count"))
+        }
+        // The same flush still rolls up features.
+        assertEquals(2, events.single { it.type == EventType.FEATURE }.count)
     }
 
     // ─── 4xx error callback ───────────────────────────────────────────────

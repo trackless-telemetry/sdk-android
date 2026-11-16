@@ -62,7 +62,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.tracklesstelemetry:sdk-android:0.6.0")
+    implementation("com.tracklesstelemetry:sdk-android:0.7.0")
 }
 ```
 
@@ -70,7 +70,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'com.tracklesstelemetry:sdk-android:0.6.0'
+    implementation 'com.tracklesstelemetry:sdk-android:0.7.0'
 }
 ```
 
@@ -172,7 +172,7 @@ Changing `measureLaunch`, `launchThresholdSeconds`, `detectHangs` or `captureUnc
 
 **Environment auto-detection:** If the app has `FLAG_DEBUGGABLE` set, environment defaults to `SANDBOX`. Otherwise `PRODUCTION`. Override by passing `environment` explicitly.
 
-**App version auto-detection:** `appVersion` and `buildNumber` are automatically read from `PackageManager` (`versionName` and `versionCode`). Your `versionName` must be 1–50 characters of letters, digits, `.`, `_`, and `-` (e.g. `"1.0-beta"`, not `"1.0 beta"`), or ingest rejects every packet — see Section 13.
+**App version auto-detection:** `appVersion` and `buildNumber` are automatically read from `PackageManager` (`versionName` and `versionCode`). Your `versionName` must be 1–50 characters of letters, digits, `.`, `_`, and `-` (e.g. `"1.0-beta"`, not `"1.0 beta"`). A value that is not is left out of every payload with one warning at `configure()`, and everything else is still sent; the dashboard then has no version for that build — see Section 13.
 
 ## 3. Track Events
 
@@ -300,8 +300,8 @@ Trackless.funnel("onboarding", 3, "complete")
 
 **Rules:**
 - Step index is developer-defined (0-based) and determines the order of steps in funnel charts
-- Steps are deduplicated per session — calling the same step index twice is a no-op
-- Funnel state resets when the session ends
+- Every call counts — sending a step index again, in the same session or a later one, records that step again. Each step is its own count; nothing links one step to the next
+- Call `funnel()` when the step happens (the tap, the completed action), not when a screen composes or recomposes, because every call counts
 
 ### Performance Metrics
 
@@ -713,6 +713,21 @@ fun SearchScreen() {
 ```
 
 ```kotlin
+// CartButton.kt
+@Composable
+fun CartButton(navController: NavController) {
+    Button(onClick = {
+        // Step 0 is sent from the tap, not from CheckoutScreen's composition,
+        // which can run many times: every funnel() call counts.
+        Trackless.funnel("checkout", 0, "view_cart")
+        navController.navigate("checkout")
+    }) {
+        Text("View cart")
+    }
+}
+```
+
+```kotlin
 // CheckoutScreen.kt
 @Composable
 fun CheckoutScreen(navController: NavController) {
@@ -721,7 +736,6 @@ fun CheckoutScreen(navController: NavController) {
 
     when (step) {
         CheckoutStep.CART -> {
-            Trackless.funnel("checkout", 0, "view_cart")
             CartSummary(onContinue = { step = CheckoutStep.SHIPPING })
         }
         CheckoutStep.SHIPPING -> {
@@ -811,7 +825,7 @@ Trackless collects **no user identifiers** and stores **only aggregate counts**:
 - **PII auto-stripping** — email addresses, phone numbers, and SSN patterns are automatically stripped from all event fields before buffering
 - **No permissions required** — the SDK requires no Android permissions
 
-The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.6.0"`). All are coarse, non-identifying dimensions.
+The only context collected is: platform (`"android"`), OS version (API level integer, e.g., `"34"`), device class (phone/tablet from screen size), region (two-letter country code from `Locale.getDefault()`, e.g., `"US"`), language (ISO 639-1 code from `Locale.getDefault().language`, e.g., `"en"`), app version, build number, and `sdkVersion` (automatically included, e.g., `"android/0.7.0"`). All are coarse, non-identifying dimensions.
 
 Every one of them is either a runtime property the OS exposes to every app (OS version, device class, locale, language) or a constant compiled into your app (`versionName`, `versionCode`, `FLAG_DEBUGGABLE`). The SDK does not ask `PackageManager` when the app was installed or who installed it, so a release build cannot tell a store install from a sideload; it sends no distribution channel at all.
 
@@ -904,7 +918,8 @@ The ingest endpoint's error responses are deliberately generic on the wire — t
 
 | Logcat signal                                               | What it means                                                                                                                                                                | What to do                                                                                                                                                                              |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flush rejected — status=400`                               | The payload failed validation. Ingest validates the whole payload before it looks up the API key and rejects it outright; the SDK drops the batch and does not retry it. Event names and details are normalized before sending, so a 400 on every flush almost always means a context value fails its pattern: `appVersion` and `buildNumber` must be 1–50 characters of letters, digits, `.`, `_`, and `-` only (no spaces or parentheses). | Check the app's Gradle `versionName`, including any `versionNameSuffix` — the SDK reads it from `PackageManager` as `appVersion`. A value such as `"1.0 beta"` or `"1.0 (42)"` makes every packet fail; use a conforming value such as `"1.0-beta"` and rebuild. `buildNumber` comes from `versionCode`, which is always numeric. |
+| `flush rejected — status=400`                               | The payload failed validation. Ingest validates the whole payload before it looks up the API key and rejects it outright; the SDK drops the batch and does not retry it. Event names and details are normalized before sending, so a 400 on every flush is rare. `appVersion` is not the cause: the SDK leaves an invalid one out (see the next row). | Turn on `debugLogging` and check the names, details, steps and codes you send. If it persists on every flush, contact support with the SDK version. |
+| `appVersion (versionName) is not 1–50 letters, digits, ".", "_" or "-" — left out of every payload` | The Gradle `versionName`, including any `versionNameSuffix`, is empty or holds a character ingest does not accept, such as a space or a parenthesis. The SDK leaves that one value out so the rest of the payload is accepted; events are counted, with no app version on them. | Use a conforming `versionName`, such as `"1.0-beta"` in place of `"1.0 beta"` or `"1.0 (42)"`, and rebuild. `buildNumber` comes from `versionCode`, which is always numeric. |
 | `flush rejected — status=401`                               | Wrong or regenerated API key. Keys are shown once at creation; regenerating a key invalidates the old one immediately.                                                        | Get the current key from the dashboard and rebuild. Check the BuildConfig field actually carries it.                                                                                      |
 | `flush rejected — status=402`                               | The plan's monthly event quota is reached. The endpoint stops accepting events — nothing converts silently and nothing is billed as overage.                                  | Wait for the next billing period, or upgrade the plan in the dashboard.                                                                                                                   |
 | `flush rejected — status=413`                               | The request body was over the 50 KB ingest limit or arrived without a `Content-Length` header. The SDK splits batches below 50 KB, so this points to a proxy or custom endpoint that rewrites the request, or a modified client. | Send to the Trackless endpoint directly, or make sure the proxy forwards the body unchanged with its `Content-Length`. |

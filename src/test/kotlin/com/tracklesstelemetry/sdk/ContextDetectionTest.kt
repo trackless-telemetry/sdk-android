@@ -264,4 +264,54 @@ class ContextDetectionTest {
         val ctx = ContextDetection.detect(context)
         assertEquals("android", ctx.platform)
     }
+
+    @Test
+    @DisplayName("A versionName with a space is omitted and named; the rest is kept")
+    fun invalidVersionNameOmitted() {
+        configuration.screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL
+        packageInfo.versionName = "1.0 beta"
+        val detected = ContextDetection.detectReportingOmissions(context)
+        assertNull(detected.context.appVersion)
+        assertEquals("42", detected.context.buildNumber)
+        assertEquals("phone", detected.context.deviceClass)
+        assertEquals(listOf("appVersion"), detected.omitted)
+        assertFalse(detected.context.toJson().has("appVersion"))
+    }
+
+    @Test
+    @DisplayName("A valid versionName is kept and nothing is reported")
+    fun validVersionNameKept() {
+        configuration.screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL
+        val detected = ContextDetection.detectReportingOmissions(context)
+        assertEquals("2.1.0", detected.context.appVersion)
+        assertEquals(emptyList<String>(), detected.omitted)
+    }
+
+    @Test
+    @DisplayName("omitInvalid applies ingest's rules to appVersion, buildNumber and osVersion")
+    fun omitInvalidRules() {
+        val detected = ContextDetection.omitInvalid(
+            EventContext(
+                osVersion = "10_15",
+                appVersion = "a".repeat(51),
+                buildNumber = "",
+                sdkVersion = "android/0.0.0",
+            )
+        )
+        assertEquals(EventContext(sdkVersion = "android/0.0.0"), detected.context)
+        assertEquals(listOf("appVersion", "buildNumber", "osVersion"), detected.omitted)
+
+        val valid = EventContext(osVersion = "35", appVersion = "a".repeat(50), buildNumber = "1")
+        assertEquals(valid, ContextDetection.omitInvalid(valid).context)
+        assertEquals(emptyList<String>(), ContextDetection.omitInvalid(valid).omitted)
+        assertEquals(emptyList<String>(), ContextDetection.omitInvalid(EventContext()).omitted)
+    }
+
+    @Test
+    @DisplayName("The warning names the field and its Gradle source, never a value")
+    fun omittedWarningNamesTheField() {
+        assertEquals(true, ContextDetection.omittedWarning("appVersion").contains("versionName"))
+        assertEquals(true, ContextDetection.omittedWarning("buildNumber").contains("versionCode"))
+        assertEquals(true, ContextDetection.omittedWarning("osVersion").contains("osVersion"))
+    }
 }

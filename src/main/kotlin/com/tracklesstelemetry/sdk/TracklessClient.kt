@@ -124,7 +124,6 @@ object Trackless {
     private var buffer: EventBuffer = EventBuffer()
     private var circuitBreaker: CircuitBreaker = CircuitBreaker()
     private var sessionManager: SessionManager = SessionManager()
-    private var funnelTracker: FunnelTracker = FunnelTracker()
     private var featureTracker: FeatureTracker = FeatureTracker()
     private var errorTracker: ErrorTracker = ErrorTracker()
 
@@ -292,10 +291,11 @@ object Trackless {
             buffer = EventBuffer()
             circuitBreaker = CircuitBreaker()
             sessionManager = SessionManager()
-            funnelTracker = FunnelTracker()
             featureTracker = FeatureTracker()
             errorTracker = ErrorTracker()
-            this.context = ContextDetection.detect(context)
+            val detected = ContextDetection.detectReportingOmissions(context)
+            this.context = detected.context
+            detected.omitted.forEach { warn(ContextDetection.omittedWarning(it)) }
 
             bufferFullWarned.set(false)
             preConfigureWarned.set(false)
@@ -363,17 +363,16 @@ object Trackless {
 
     /**
      * Record a funnel step event.
-     * Deduplicates steps within the same funnel.
+     *
+     * Every call is counted, including a step index already sent this
+     * session. Each call is its own event with no `count`: funnel events are
+     * never rolled up, because ingest rejects `count > 1` on a funnel.
      */
     fun funnel(funnelName: String, stepIndex: Int, stepName: String) {
         if (!canRecord()) return
         if (stepIndex < 0) return
         val normalizedFunnel = normalizeName(funnelName) ?: return
         val normalizedStep = normalizeName(stepName) ?: return
-        if (!funnelTracker.step(normalizedFunnel, stepIndex)) {
-            debug("funnel — $normalizedFunnel/$normalizedStep (duplicate, skipped)")
-            return
-        }
         sessionManager.recordActivity()
         addToBuffer(
             TracklessEvent(
@@ -793,7 +792,6 @@ object Trackless {
                 timers.discardAll()
                 buffer.clear()
                 sessionManager.destroy()
-                funnelTracker.clear()
                 featureTracker.clear()
                 errorTracker.clear()
                 stopPeriodicFlush()
@@ -839,7 +837,6 @@ object Trackless {
             debug("destroying")
 
             retireCurrentConfiguration()
-            funnelTracker.clear()
             featureTracker.clear()
             errorTracker.clear()
             configured.set(false)
@@ -1092,7 +1089,6 @@ object Trackless {
         // has no session to end, but may still hold timers started since.
         timers.discardAll()
         val result = sessionManager.end() ?: return
-        funnelTracker.clear()
         featureTracker.clear()
         errorTracker.clear()
         addToBuffer(
@@ -1350,7 +1346,6 @@ object Trackless {
             buffer = EventBuffer()
             circuitBreaker = CircuitBreaker()
             sessionManager = SessionManager()
-            funnelTracker = FunnelTracker()
             featureTracker = FeatureTracker()
             errorTracker = ErrorTracker()
             timers = OpenTimers()

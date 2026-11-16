@@ -144,6 +144,24 @@ class EventBufferTest {
     }
 
     @Test
+    @DisplayName("Identical funnel events are never rolled up and carry no count")
+    fun identicalFunnelEventsNeverRolledUp() {
+        repeat(3) {
+            assertTrue(
+                buffer.add(TracklessEvent(type = EventType.FUNNEL, name = "checkout", step = "cart", stepIndex = 0))
+            )
+        }
+
+        assertEquals(3, buffer.totalSize)
+        val events = buffer.drain("production", context).flatMap { it.events }
+        assertEquals(3, events.size)
+        events.forEach {
+            assertNull(it.count)
+            assertFalse(it.toJson().has("count"))
+        }
+    }
+
+    @Test
     @DisplayName("Bounded memory: buffer drops new entries at max capacity")
     fun boundedMemoryDropsNewEntries() {
         val smallBuffer = EventBuffer(100)
